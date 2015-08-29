@@ -91,7 +91,7 @@ XCB_CONN_ERRORS = {
 }
 
 
-class MaskMap(object):
+class MaskMap:
     """
         A general utility class that encapsulates the way the mask/value idiom
         works in xpyb. It understands a special attribute _maskvalue on
@@ -125,7 +125,7 @@ class MaskMap(object):
         return mask, values
 
 
-class AtomCache(object):
+class AtomCache:
     def __init__(self, conn):
         self.conn = conn
         self.atoms = {}
@@ -171,6 +171,15 @@ class Window:
     self.wid = wid
     self.wm = wm
 
+  def show(self):
+    self.wm.show_window(self)
+
+  def hide(self):
+    self.wm.hide_window(self)
+
+  def grab_key(self, modifiers, key):
+    self.wm.grab_key(modifiers, key, window=self)
+
   def set_attribute(self, **kwargs):
       mask, values = AttributeMasks(**kwargs)
       self.wm._conn.core.ChangeWindowAttributesChecked(
@@ -213,9 +222,6 @@ class Window:
       ).check()
 
 
-
-
-
 AttributeMasks = MaskMap(CW)
 
 SUPPORTED_ATOMS = [
@@ -239,13 +245,102 @@ SUPPORTED_ATOMS = [
     '_NET_WM_PID',
 ]
 
+
+ModMasks = {
+    "shift": 1 << 0,
+    "lock": 1 << 1,
+    "control": 1 << 2,
+    "mod1": 1 << 3,
+    "mod2": 1 << 4,
+    "mod3": 1 << 5,
+    "mod4": 1 << 6,
+    "mod5": 1 << 7,
+}
+ModMapOrder = [
+    "shift",
+    "lock",
+    "control",
+    "mod1",
+    "mod2",
+    "mod3",
+    "mod4",
+    "mod5"
+]
+
+import operator
+from functools import  reduce
+
+def get_modmask(modifiers):
+    """
+    Translate a modifier mask specified as a list of strings into an or-ed
+    bit representation.
+    """
+    masks = []
+    for i in modifiers:
+        try:
+            masks.append(ModMasks[i])
+        except KeyError:
+            raise KeyError("Unknown modifier: %s" % i)
+    if masks:
+        return reduce(operator.or_, masks)
+    else:
+        return 0
+
+
+class Keyboard:
+  def __init__(self, xcb_setup, conn):
+    self._conn = conn
+    self.code_to_syms = {}
+    self.first_sym_to_code = {}
+
+    first = xcb_setup.min_keycode
+    count = xcb_setup.max_keycode - xcb_setup.min_keycode + 1
+    q = self._conn.core.GetKeyboardMapping(first, count).reply()
+    assert len(q.keysyms) % q.keysyms_per_keycode == 0,  \
+        "Wrong keyboard mapping from X server??"
+
+    for i in range(len(q.keysyms) // q.keysyms_per_keycode):
+        self.code_to_syms[first + i] = \
+            q.keysyms[i * q.keysyms_per_keycode:(i + 1) * q.keysyms_per_keycode]
+    for k, s in self.code_to_syms.items():
+        if s[0] and not s[0] in self.first_sym_to_code:
+            self.first_sym_to_code[s[0]] = k
+
+  def key_to_code(self, key):
+    from xkeysyms import keysyms
+    assert key in keysyms, "unknown key"  # TODO: generate warning
+    sym  = keysyms[key]
+    return self.first_sym_to_code[sym]
+
+
 class WM:
   """
     Hide all dirty implementation details of XCB.
     Other classes should use this class to interface with X.
   """
-  root = None
+  root  = None
   atoms = None
+
+  def grab_key(self, modifiers, key,  owner_events=False, window=None):
+    # key => keysym => keycode
+
+    if window is None:
+      window = self.root
+
+    keycode = self.kbd.key_to_code(key)
+    print("keycode:", keycode)
+    modmask = get_modmask(modifiers)  # TODO: move to Keyboard
+    pointer_mode = xcffib.xproto.GrabMode.Async
+    keyboard_mode = xcffib.xproto.GrabMode.Async
+    self._conn.core.GrabKey(
+        owner_events,
+        window.wid,
+        modmask,
+        keycode,
+        pointer_mode,
+        keyboard_mode
+    )
+    self.flush()
 
   def create_window(self, x, y, width, height):
     wid = self._conn.generate_id()
@@ -266,6 +361,8 @@ class WM:
 
   def __init__(self, display=None):
     self.hook = Hook()
+    self.windows = {}
+
     if not display:
       display = os.environ.get("DISPLAY")
     self._conn = xcffib.connect(display=display)
@@ -294,7 +391,9 @@ class WM:
     supporting_wm_check_window = self.create_window(-1, -1, 1, 1)
     supporting_wm_check_window.set_property('_NET_WM_NAME', "SWM")
     self.root.set_property('_NET_SUPPORTING_WM_CHECK', supporting_wm_check_window.wid)
+
     # TODO: set cursor
+
     self.ignoreEvents = set([
         xcffib.xproto.KeyReleaseEvent,
         xcffib.xproto.ReparentNotifyEvent,
@@ -306,8 +405,11 @@ class WM:
         xcffib.xproto.FocusInEvent,
         xcffib.xproto.NoExposureEvent
     ])
+    # KEYBOARD
+    self.kbd = Keyboard(xcb_setup, self._conn)
 
-    self.flush()   # TODO: why?
+    # FLUSH PENDING STUFF
+    self.xsync()  # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
 
@@ -325,6 +427,22 @@ class WM:
     fd = self._conn.get_file_descriptor()
     self._eventloop.add_reader(fd, self._xpoll)
 
+    # standard events
+    self.hook.register("MapRequest", self.handle_MapRequest)
+
+
+
+  def handle_MapRequest(self, evname, xcb_event):
+    wid = xcb_event.window
+    if wid not in self.windows:
+      window = Window(self, wid)
+      self.windows[wid] = window
+    self.show_window(window)
+    #self.xsync()
+
+  def show_window(self, window):
+    self._conn.core.MapWindow(window.wid)
+
   def finalize(self):
     raise NotImplementedError("TODO")
 
@@ -335,7 +453,7 @@ class WM:
     # The idea here is that pushing an innocuous request through the queue
     # and waiting for a response "syncs" the connection, since requests are
     # serviced in order.
-    self.conn.core.GetInputFocus().reply()
+    self._conn.core.GetInputFocus().reply()
 
   def stop(self):
     print('Stopping eventloop')
@@ -354,11 +472,9 @@ class WM:
       try:
           e = self._conn.poll_for_event()  # TODO: renane to XCB event
           if not e:
-              print("no events in XCB queue")
-              break
+            break
 
           evname = e.__class__.__name__
-
           if evname.endswith("Event"):
               evname = evname[:-5]
 
@@ -387,15 +503,19 @@ class WM:
               break
 
           print("Got an exception in poll loop", e)
+    self.flush()  # xcb often doesn't flush implicitly
 
 
-class SupressEvent:
+class SupressEvent(Exception):
   pass
 
 
 class Hook:
   def __init__(self):
     self.cb_map = defaultdict(list)
+
+  def register(self, event, cb):
+    self.cb_map[event].append(cb)
 
   def fire(self, event, *args, **kwargs):
     handlers = self.cb_map[event]
@@ -407,10 +527,12 @@ class Hook:
       except SupressEvent:
         break
       except Exception as e:
-        print("err in cb", handler, e)
+        print("err in hook", handler, e, "event:", event)
+
 
 if __name__ == '__main__':
   wm = WM()
+  wm.grab_key(['mod1'], 'w')
   wm.loop()
   print("BYE!")
   
