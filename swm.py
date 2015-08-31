@@ -15,10 +15,17 @@ import signal
 import os
 
 """
-Hierachy:
-WM
+To read:
+  1. Extended Window Manager Hints (EWMH) http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
+  2. Inter-Client Communication Conventions Manual (ICCM) http://tronche.com/gui/x/icccm/
+
+Classes:
+1. WM (WindowManager)
+  Does all dirty work with XCB. Other classes should work with this one to communicate with X.
 Screen
+  Currently does nothing.
 Window
+  Stores the state of the window. Has methods to move, resize, fullscreen, rise, hide and some others.
 """
 
 # http://standards.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870830002400
@@ -91,6 +98,7 @@ XCB_CONN_ERRORS = {
 }
 
 
+# TODO: have no idea what is this class about.
 class MaskMap:
     """
         A general utility class that encapsulates the way the mask/value idiom
@@ -125,6 +133,7 @@ class MaskMap:
         return mask, values
 
 
+# TODO: stolen from qtile. Probably, we want to refactor it.
 class AtomCache:
     def __init__(self, conn):
         self.conn = conn
@@ -162,8 +171,13 @@ class AtomCache:
 
 
 class Screen:
+  """ Represent screen as seen by xrandr. """
   def __init__(self, root):
     self.root = root
+
+
+class Desktop:
+  """ Class for virtual desktops. """
 
 
 class Window:
@@ -176,6 +190,16 @@ class Window:
 
   def hide(self):
     self.wm.hide_window(self)
+
+  def kill(self):
+    self.wm.kill_window(self)
+
+  def move(self, x, y, dx, dy):
+    TODO
+
+  def focus(self):
+    self.wm.focus_window(self)
+    return self
 
   def grab_key(self, modifiers, key):
     self.wm.grab_key(modifiers, key, window=self)
@@ -220,6 +244,9 @@ class Window:
           len(value),
           value
       ).check()
+
+  def __repr__(self):
+    return "Window(%s)" % self.wid
 
 
 AttributeMasks = MaskMap(CW)
@@ -315,53 +342,16 @@ class Keyboard:
 
 class WM:
   """
-    Hide all dirty implementation details of XCB.
-    Other classes should use this class to interface with X.
+      Provides basic building blocks to make a window manager.
+      It hides all the dirty implementation details of XCB.
+      Other classes should use its methods to interface with X.
   """
   root  = None
   atoms = None
 
-  def grab_key(self, modifiers, key,  owner_events=False, window=None):
-    # key => keysym => keycode
-
-    if window is None:
-      window = self.root
-
-    keycode = self.kbd.key_to_code(key)
-    print("keycode:", keycode)
-    modmask = get_modmask(modifiers)  # TODO: move to Keyboard
-    pointer_mode = xcffib.xproto.GrabMode.Async
-    keyboard_mode = xcffib.xproto.GrabMode.Async
-    self._conn.core.GrabKey(
-        owner_events,
-        window.wid,
-        modmask,
-        keycode,
-        pointer_mode,
-        keyboard_mode
-    )
-    self.flush()
-
-  def create_window(self, x, y, width, height):
-    wid = self._conn.generate_id()
-    self._conn.core.CreateWindow(
-        self.xcb_default_screen.root_depth,
-        wid,
-        self.xcb_default_screen.root,
-        x, y, width, height, 0,
-        WindowClass.InputOutput,
-        self.xcb_default_screen.root_visual,
-        CW.BackPixel | CW.EventMask,
-        [
-            self.xcb_default_screen.black_pixel,
-            EventMask.StructureNotify | EventMask.Exposure
-        ]
-    )
-    return Window(self, wid)
-
   def __init__(self, display=None):
     self.hook = Hook()
-    self.windows = {}
+    self.windows = []
 
     if not display:
       display = os.environ.get("DISPLAY")
@@ -412,6 +402,8 @@ class WM:
     self.xsync()  # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
+    self.query_tree()
+    self.focused = self.windows[-1].focus()
 
 
     # TODO: self.scan() get list of already opened windows
@@ -429,10 +421,82 @@ class WM:
 
     # standard events
     self.hook.register("MapRequest", self.handle_MapRequest)
+    self.hook.register("KeyPress", self.on_key_press)
 
+  def grab_key(self, modifiers, key,  owner_events=False, window=None):
+    """ Intercept this key when it is pressed. If owner_events=False then
+        the window in focus will not receive it. This is useful from WM hotkeys.
+    """
+    # Here is how X works with keys:
+    # key => keysym => keycode
+    # where `key' is something like 'a', 'b' or 'Enter',
+    # `keysum' is what should be written on they key cap (phisical keyboard)
+    # and `keycode' is a number reported by the keyboard when the key is pressed.
+    # Modifiers are keys like Shift, Alt, Win and some other buttons.
 
+    if window is None:
+      window = self.root
+
+    keycode = self.kbd.key_to_code(key)
+    print("keycode:", keycode)
+    modmask = get_modmask(modifiers)  # TODO: move to Keyboard
+    pointer_mode = xcffib.xproto.GrabMode.Async
+    keyboard_mode = xcffib.xproto.GrabMode.Async
+    self._conn.core.GrabKey(
+        owner_events,
+        window.wid,
+        modmask,
+        keycode,
+        pointer_mode,
+        keyboard_mode
+    )
+    self.flush()
+
+  def raise_window(self, window):
+    """ Put window on top of others. TODO: what about focus? """
+    mode = xproto.StackMode.Above
+    self._conn.core.ConfigureWindow(window.wid, xproto.ConfigWindow.StackMode, [mode])
+
+  def kill_window(self, window):
+    """ This is what happens to windows when Alt-F4 or Ctrl-w is pressed. """
+    self._conn.core.KillClient(window.wid)
+
+  def focus_window(self, window):
+    """ Let window receive mouse and keyboard events. """
+    self._conn.core.SetInputFocus(xcffib.xproto.InputFocus.PointerRoot, window.wid, xcffib.xproto.Time.CurrentTime)
+    self.focus = window
+
+  def create_window(self, x, y, width, height):
+    """ Create a window. Right now only used for initialisation, see __init__. """
+    wid = self._conn.generate_id()
+    self._conn.core.CreateWindow(
+        self.xcb_default_screen.root_depth,
+        wid,
+        self.xcb_default_screen.root,
+        x, y, width, height, 0,
+        WindowClass.InputOutput,
+        self.xcb_default_screen.root_visual,
+        CW.BackPixel | CW.EventMask,
+        [
+            self.xcb_default_screen.black_pixel,
+            EventMask.StructureNotify | EventMask.Exposure
+        ]
+    )
+    return Window(self, wid)
+
+  def query_tree(self):
+    """ Get all windows in the system. They form a hierarchy (tree). """
+    q = self._conn.core.QueryTree(self.root.wid).reply()
+    root = None
+    parent = None
+    print(self.root.wid)
+    for xcb_window in q.children:
+      window = Window(self, xcb_window)
+      self.windows.append(window)
+    print("WINDOWS:", self.windows)
 
   def handle_MapRequest(self, evname, xcb_event):
+    """ Map request is a request to draw the window on screen. """
     wid = xcb_event.window
     if wid not in self.windows:
       window = Window(self, wid)
@@ -444,29 +508,42 @@ class WM:
     self._conn.core.MapWindow(window.wid)
 
   def finalize(self):
-    raise NotImplementedError("TODO")
+    """ This code is run when event loop is terminated. """
+    pass  # currently nothing to do here
 
   def flush(self):
+    """ Force pending X request to be sent.
+        By default XCB aggressevly buffers for performance reasons. """
     return self._conn.flush()
 
   def xsync(self):
+    """ Flush XCB queue and wait till it is processed by X server. """
     # The idea here is that pushing an innocuous request through the queue
     # and waiting for a response "syncs" the connection, since requests are
     # serviced in order.
     self._conn.core.GetInputFocus().reply()
 
   def stop(self):
+    """ It does what it says. """
     print('Stopping eventloop')
     self._eventloop.stop()
 
   def loop(self):
-      try:
-          self._eventloop.run_forever()
-      finally:
-          self.finalize()
+    """ DITTO """
+    try:
+        self._eventloop.run_forever()
+    finally:
+        self.finalize()
 
+  def on_key_press(self, evname, event):
+    modmap  = event.state
+    keycode = event.detail
+    # Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
+    print(event.detail)
+    self.focus.kill()
 
   def _xpoll(self):
+    """ Fetch incomming events (if any) and call hooks. """
     while True:
       # TODO: too long try ... catch
       try:
@@ -482,6 +559,7 @@ class WM:
             print("ignoring", e)
             continue
           self.hook.fire(evname, e)
+      # *Original description:
       # Catch some bad X exceptions. Since X is event based, race
       # conditions can occur almost anywhere in the code. For
       # example, if a window is created and then immediately
@@ -490,6 +568,13 @@ class WM:
       # will throw a WindowError exception. We can essentially
       # ignore it, since the window is already dead and we've got
       # another event in the queue notifying us to clean it up.
+      # *My description:
+      # Ok, kids, today I'll teach you how to write reliable interprise
+      # software! You just catch all exceptions in a top-level loop
+      # and ignore them. No, I'm kidding, these exceptions are no use
+      # for us because we don't care if a window cannot be drawn or something.
+      # We actually only need to handle just a few events and ignore the rest.
+      # Hence, we do not process these errors.
       except (WindowError, AccessError, DrawableError):
           pass
 
@@ -507,10 +592,11 @@ class WM:
 
 
 class SupressEvent(Exception):
-  pass
+  """ Raise this one in callback if further callbacks shouldn't be called. """
 
 
 class Hook:
+  """ A callback dispatcher. """
   def __init__(self):
     self.cb_map = defaultdict(list)
 
@@ -535,4 +621,3 @@ if __name__ == '__main__':
   wm.grab_key(['mod1'], 'w')
   wm.loop()
   print("BYE!")
-  
