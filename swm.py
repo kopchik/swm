@@ -140,7 +140,7 @@ class Window:
   def grab_key(self, modifiers, key):
     self.wm.grab_key(modifiers, key, window=self)
 
-  def set_attribute(self, **kwargs):
+  def set_attr(self, **kwargs):
       mask, values = AttributeMasks(**kwargs)
       self.wm._conn.core.ChangeWindowAttributesChecked(
           self.wid, mask, values
@@ -289,21 +289,22 @@ class WM:
   atoms = None
 
   def __init__(self, display=None):
+    # INIT SOME BASIC STUFF
     self.hook = Hook()
     self.windows = {}
-
     if not display:
       display = os.environ.get("DISPLAY")
     self._conn = xcffib.connect(display=display)
     self.atoms = AtomCache(self._conn)
-    # 'create' root window
+
+    # CREATE ROOT WINDOW
     xcb_setup = self._conn.get_setup()
     xcb_screens = [i for i in xcb_setup.roots]
     self.xcb_default_screen = xcb_screens[self._conn.pref_screen]
     root_wid = self.xcb_default_screen.root
     self.root = Window(self, root_wid)
 
-    self.root.set_attribute(
+    self.root.set_attr(
         eventmask=(
             EventMask.StructureNotify |
             EventMask.SubstructureNotify |
