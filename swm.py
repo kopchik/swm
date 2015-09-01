@@ -24,11 +24,13 @@ import os
 
 from xcffib.xproto import WindowError, AccessError, DrawableError
 from xcffib.xproto import CW, WindowClass, EventMask
+from xcffib import xproto
 import xcffib.randr
 import xcffib.xproto
 import xcffib
 
-from defs import XCB_CONN_ERRORS, WINDOW_TYPES
+from defs import XCB_CONN_ERRORS, WINDOW_TYPES, PROPERTYMAP
+from xkeysyms import keysyms
 
 
 
@@ -78,9 +80,9 @@ class AtomCache:
         for name in WINDOW_TYPES.keys():
             self.insert(name=name)
 
-        for i in dir(xcffib.xproto.Atom):
+        for i in dir(xproto.Atom):
             if not i.startswith("_"):
-                self.insert(name=i, atom=getattr(xcffib.xproto.Atom, i))
+                self.insert(name=i, atom=getattr(xproto.Atom, i))
 
     def insert(self, name=None, atom=None):
         assert name or atom
@@ -129,7 +131,7 @@ class Window:
     self.wm.kill_window(self)
 
   def move(self, x, y, dx, dy):
-    TODO
+    raise NotImplementedError
 
   def focus(self):
     self.wm.focus_window(self)
@@ -170,7 +172,7 @@ class Window:
         value = [value]
 
       self.wm._conn.core.ChangePropertyChecked(
-          xcffib.xproto.PropMode.Replace,
+          xproto.PropMode.Replace,
           self.wid,
           self.wm.atoms[name],
           self.wm.atoms[type],
@@ -178,6 +180,9 @@ class Window:
           len(value),
           value
       ).check()
+
+  def __lt__(self, other):
+    return True
 
   def __repr__(self):
     return "Window(%s)" % self.wid
@@ -249,6 +254,7 @@ def get_modmask(modifiers):
 
 
 class Keyboard:
+  """ Just service keyboard functions. """
   def __init__(self, xcb_setup, conn):
     self._conn = conn
     self.code_to_syms = {}
@@ -268,7 +274,6 @@ class Keyboard:
             self.first_sym_to_code[s[0]] = k
 
   def key_to_code(self, key):
-    from xkeysyms import keysyms
     assert key in keysyms, "unknown key"  # TODO: generate warning
     sym  = keysyms[key]
     return self.first_sym_to_code[sym]
@@ -285,7 +290,7 @@ class WM:
 
   def __init__(self, display=None):
     self.hook = Hook()
-    self.windows = []
+    self.windows = {}
 
     if not display:
       display = os.environ.get("DISPLAY")
@@ -318,16 +323,17 @@ class WM:
 
     # TODO: set cursor
 
+    # EVENTS THAT HAVE LITTLE USE FOR US...
     self.ignoreEvents = set([
-        xcffib.xproto.KeyReleaseEvent,
-        xcffib.xproto.ReparentNotifyEvent,
-        xcffib.xproto.CreateNotifyEvent,
+        xproto.KeyReleaseEvent,
+        xproto.ReparentNotifyEvent,
+        xproto.CreateNotifyEvent,
         # DWM handles this to help "broken focusing windows".
-        xcffib.xproto.MapNotifyEvent,
-        xcffib.xproto.LeaveNotifyEvent,
-        xcffib.xproto.FocusOutEvent,
-        xcffib.xproto.FocusInEvent,
-        xcffib.xproto.NoExposureEvent
+        xproto.MapNotifyEvent,
+        xproto.LeaveNotifyEvent,
+        xproto.FocusOutEvent,
+        xproto.FocusInEvent,
+        xproto.NoExposureEvent
     ])
     # KEYBOARD
     self.kbd = Keyboard(xcb_setup, self._conn)
@@ -337,7 +343,7 @@ class WM:
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
     self.query_tree()
-    self.focused = self.windows[-1].focus()
+    self.focus = sorted(self.windows.values())[-1].focus()
 
 
     # TODO: self.scan() get list of already opened windows
@@ -374,8 +380,8 @@ class WM:
     keycode = self.kbd.key_to_code(key)
     print("keycode:", keycode)
     modmask = get_modmask(modifiers)  # TODO: move to Keyboard
-    pointer_mode = xcffib.xproto.GrabMode.Async
-    keyboard_mode = xcffib.xproto.GrabMode.Async
+    pointer_mode = xproto.GrabMode.Async
+    keyboard_mode = xproto.GrabMode.Async
     self._conn.core.GrabKey(
         owner_events,
         window.wid,
@@ -397,7 +403,7 @@ class WM:
 
   def focus_window(self, window):
     """ Let window receive mouse and keyboard events. """
-    self._conn.core.SetInputFocus(xcffib.xproto.InputFocus.PointerRoot, window.wid, xcffib.xproto.Time.CurrentTime)
+    self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
     self.focus = window
 
   def create_window(self, x, y, width, height):
@@ -421,13 +427,10 @@ class WM:
   def query_tree(self):
     """ Get all windows in the system. They form a hierarchy (tree). """
     q = self._conn.core.QueryTree(self.root.wid).reply()
-    root = None
-    parent = None
-    print(self.root.wid)
-    for xcb_window in q.children:
-      window = Window(self, xcb_window)
-      self.windows.append(window)
-    print("WINDOWS:", self.windows)
+    for wid in q.children:
+      window = Window(self, wid)
+      self.windows[wid] = window
+    print("WINDOWS:", sorted(self.windows.values()))
 
   def handle_MapRequest(self, evname, xcb_event):
     """ Map request is a request to draw the window on screen. """
@@ -435,8 +438,10 @@ class WM:
     if wid not in self.windows:
       window = Window(self, wid)
       self.windows[wid] = window
+    else:
+      window = self.windows[wid]
     self.show_window(window)
-    #self.xsync()
+    self.xsync()
 
   def show_window(self, window):
     self._conn.core.MapWindow(window.wid)
@@ -470,11 +475,12 @@ class WM:
         self.finalize()
 
   def on_key_press(self, evname, event):
+    # Example x11trace output:
+    #   Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
     modmap  = event.state
     keycode = event.detail
-    # Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
-    print(event.detail)
-    self.focus.kill()
+    print("pressed mod and key:", modmap, keycode)
+    self.focus.kill()  # TODO: do not kill root :)
 
   def _xpoll(self):
     """ Fetch incomming events (if any) and call hooks. """
@@ -521,7 +527,7 @@ class WM:
               self.stop()
               break
 
-          print("Got an exception in poll loop", e)
+          print("Got an exception in poll loop: %s (%s)" %  (e, type(e)))
     self.flush()  # xcb often doesn't flush implicitly
 
 
