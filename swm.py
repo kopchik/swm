@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
-"""
-Based on qtile code.
-"""
-
-import xcffib
-import xcffib.randr
-import xcffib.xproto
-from xcffib.xproto import CW, WindowClass, EventMask
-from xcffib.xproto import WindowError, AccessError, DrawableError
-
-from collections import defaultdict
-import asyncio
-import signal
-import os
 
 """
-To read:
+Many pieces of code are based on qtile.
+
+Some useful literature to read:
   1. Extended Window Manager Hints (EWMH) http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
   2. Inter-Client Communication Conventions Manual (ICCM) http://tronche.com/gui/x/icccm/
 
-Classes:
+Classes and their functions
+----------------------------
 1. WM (WindowManager)
   Does all dirty work with XCB. Other classes should work with this one to communicate with X.
 Screen
@@ -28,74 +17,19 @@ Window
   Stores the state of the window. Has methods to move, resize, fullscreen, rise, hide and some others.
 """
 
-# http://standards.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870830002400
-WindowTypes = {
-    '_NET_WM_WINDOW_TYPE_DESKTOP': "desktop",
-    '_NET_WM_WINDOW_TYPE_DOCK': "dock",
-    '_NET_WM_WINDOW_TYPE_TOOLBAR': "toolbar",
-    '_NET_WM_WINDOW_TYPE_MENU': "menu",
-    '_NET_WM_WINDOW_TYPE_UTILITY': "utility",
-    '_NET_WM_WINDOW_TYPE_SPLASH': "splash",
-    '_NET_WM_WINDOW_TYPE_DIALOG': "dialog",
-    '_NET_WM_WINDOW_TYPE_DROPDOWN_MENU': "dropdown",
-    '_NET_WM_WINDOW_TYPE_POPUP_MENU': "menu",
-    '_NET_WM_WINDOW_TYPE_TOOLTIP': "tooltip",
-    '_NET_WM_WINDOW_TYPE_NOTIFICATION': "notification",
-    '_NET_WM_WINDOW_TYPE_COMBO': "combo",
-    '_NET_WM_WINDOW_TYPE_DND': "dnd",
-    '_NET_WM_WINDOW_TYPE_NORMAL': "normal",
-}
+from collections import defaultdict
+import asyncio
+import signal
+import os
 
+from xcffib.xproto import WindowError, AccessError, DrawableError
+from xcffib.xproto import CW, WindowClass, EventMask
+import xcffib.randr
+import xcffib.xproto
+import xcffib
 
-PropertyMap = {
-    # ewmh properties
-    "_NET_DESKTOP_GEOMETRY": ("CARDINAL", 32),
-    "_NET_SUPPORTED": ("ATOM", 32),
-    "_NET_SUPPORTING_WM_CHECK": ("WINDOW", 32),
-    "_NET_WM_NAME": ("UTF8_STRING", 8),
-    "_NET_WM_PID": ("CARDINAL", 32),
-    "_NET_CLIENT_LIST": ("WINDOW", 32),
-    "_NET_CLIENT_LIST_STACKING": ("WINDOW", 32),
-    "_NET_NUMBER_OF_DESKTOPS": ("CARDINAL", 32),
-    "_NET_CURRENT_DESKTOP": ("CARDINAL", 32),
-    "_NET_DESKTOP_NAMES": ("UTF8_STRING", 8),
-    "_NET_WORKAREA": ("CARDINAL", 32),
-    "_NET_ACTIVE_WINDOW": ("WINDOW", 32),
-    "_NET_WM_DESKTOP": ("CARDINAL", 32),
-    "_NET_WM_STRUT": ("CARDINAL", 32),
-    "_NET_WM_STRUT_PARTIAL": ("CARDINAL", 32),
-    "_NET_WM_WINDOW_OPACITY": ("CARDINAL", 32),
-    "_NET_WM_WINDOW_TYPE": ("CARDINAL", 32),
-    # Net State
-    "_NET_WM_STATE": ("ATOM", 32),
-    "_NET_WM_STATE_STICKY": ("ATOM", 32),
-    "_NET_WM_STATE_SKIP_TASKBAR": ("ATOM", 32),
-    "_NET_WM_STATE_FULLSCREEN": ("ATOM", 32),
-    "_NET_WM_STATE_MAXIMIZED_HORZ": ("ATOM", 32),
-    "_NET_WM_STATE_MAXIMIZED_VERT": ("ATOM", 32),
-    "_NET_WM_STATE_ABOVE": ("ATOM", 32),
-    "_NET_WM_STATE_BELOW": ("ATOM", 32),
-    "_NET_WM_STATE_MODAL": ("ATOM", 32),
-    "_NET_WM_STATE_HIDDEN": ("ATOM", 32),
-    "_NET_WM_STATE_DEMANDS_ATTENTION": ("ATOM", 32),
-    # Xembed
-    "_XEMBED_INFO": ("_XEMBED_INFO", 32),
-    # ICCCM
-    "WM_STATE": ("WM_STATE", 32),
-    # Qtile-specific properties
-    "QTILE_INTERNAL": ("CARDINAL", 32)
-}
+from defs import XCB_CONN_ERRORS, WINDOW_TYPES
 
-
-XCB_CONN_ERRORS = {
-    1: 'XCB_CONN_ERROR',
-    2: 'XCB_CONN_CLOSED_EXT_NOTSUPPORTED',
-    3: 'XCB_CONN_CLOSED_MEM_INSUFFICIENT',
-    4: 'XCB_CONN_CLOSED_REQ_LEN_EXCEED',
-    5: 'XCB_CONN_CLOSED_PARSE_ERR',
-    6: 'XCB_CONN_CLOSED_INVALID_SCREEN',
-    7: 'XCB_CONN_CLOSED_FDPASSING_FAILED',
-}
 
 
 # TODO: have no idea what is this class about.
@@ -141,7 +75,7 @@ class AtomCache:
         self.reverse = {}
 
         # We can change the pre-loads not to wait for a return
-        for name in WindowTypes.keys():
+        for name in WINDOW_TYPES.keys():
             self.insert(name=name)
 
         for i in dir(xcffib.xproto.Atom):
@@ -210,19 +144,19 @@ class Window:
           self.wid, mask, values
       )
 
-  # TODO: rename to set_prop
-  def set_property(self, name, value, type=None, format=None):
+  # move this code to WM
+  def set_prop(self, name, value, type=None, format=None):
       """
           name: String Atom name
           type: String Atom name
           format: 8, 16, 32
       """
-      if name in PropertyMap:
+      if name in PROPERTYMAP:
           if type or format:
               raise ValueError(
                   "Over-riding default type or format for property."
               )
-          type, format = PropertyMap[name]
+          type, format = PROPERTYMAP[name]
       else:
           if None in (type, format):
               raise ValueError(
@@ -375,12 +309,12 @@ class WM:
     )
 
     # INFORM X WHICH FEATURES WE SUPPORT
-    self.root.set_property( '_NET_SUPPORTED', [self.atoms[x] for x in SUPPORTED_ATOMS])
+    self.root.set_prop( '_NET_SUPPORTED', [self.atoms[x] for x in SUPPORTED_ATOMS])
 
     # PRETEND TO BE A WINDOW MANAGER
     supporting_wm_check_window = self.create_window(-1, -1, 1, 1)
-    supporting_wm_check_window.set_property('_NET_WM_NAME', "SWM")
-    self.root.set_property('_NET_SUPPORTING_WM_CHECK', supporting_wm_check_window.wid)
+    supporting_wm_check_window.set_prop('_NET_WM_NAME', "SWM")
+    self.root.set_prop('_NET_SUPPORTING_WM_CHECK', supporting_wm_check_window.wid)
 
     # TODO: set cursor
 
