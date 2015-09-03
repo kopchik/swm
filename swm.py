@@ -369,6 +369,7 @@ class WM:
     else:
       window = self.windows[wid]
     self.show_window(window)
+    self.focus_window(window)
 
   def grab_key(self, modifiers, key,  owner_events=False, window=None):
     """ Intercept this key when it is pressed. If owner_events=False then
@@ -426,7 +427,7 @@ class WM:
     """ Let window receive mouse and keyboard events. """
     # TODO: '_NET_ACTIVE_WINDOW'
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
-    self.focus = window
+    self.cur_desktop.cur_focus = window
 
   def on_configure_window(self, _, event):
       # TODO: code from fpwm
@@ -477,21 +478,17 @@ class WM:
     self._conn.core.MapWindow(window.wid)
     self.xsync()
 
-  def move_window(self, window, x=None, y=None, dx=0, dy=1):
-    x, y, width, height = self.get_window_geometry(window)
+  def move_window(self, window, x=None, y=None, dx=0, dy=0):
     if dx or dy:
+      x, y, width, height = self.get_window_geometry(window)
       x += dx
       y += dy
 
     mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
-    value = [x,y]
-    try:
-      print(value)
-      # TODO: what the hell is *Checked and check?
-      self._conn.core.ConfigureWindowChecked(window.wid, mask, value).check()
-      self.flush()
-    except Exception as e:
-      print(e)
+    value = [x, y]
+    # TODO: what the hell is *Checked and check?
+    self._conn.core.ConfigureWindowChecked(window.wid, mask, value).check()
+    # self.flush()
 
   def get_window_geometry(self, window):
     geom = self._conn.core.GetGeometry(window.wid).reply()
@@ -616,9 +613,12 @@ if __name__ == '__main__':
   import subprocess
   from collections import deque
   alt = 'mod1'
+  ctrl = control = 'control'
   right = 'Right'
   left = 'Left'
   tab = 'Tab'
+  up = 'Up'
+  down = 'Down'
   win = 'mod4'
 
   wm = WM()
@@ -637,12 +637,26 @@ if __name__ == '__main__':
     print("Current focus:", wm.focus)
     print("---------")
 
-  kbd_event = wm.grab_key([alt], right)
-  @wm.hook(kbd_event)
+  @wm.hook(wm.grab_key([ctrl], right))
   def move_right(event):
-    print("MOVING")
     window = wm.cur_desktop.cur_focus
-    window.move(dx=20, dy=20)
+    window.move(dx=20)
+
+  @wm.hook(wm.grab_key([ctrl], left))
+  def move_right(event):
+    window = wm.cur_desktop.cur_focus
+    window.move(dx=-20)
+
+  @wm.hook(wm.grab_key([ctrl], up))
+  def move_right(event):
+    window = wm.cur_desktop.cur_focus
+    window.move(dy=-20)
+
+  @wm.hook(wm.grab_key([ctrl], down))
+  def move_right(event):
+    window = wm.cur_desktop.cur_focus
+    window.move(dy=20)
+
 
   kbd_event = wm.grab_key([win], 'n')
   @wm.hook(kbd_event)
