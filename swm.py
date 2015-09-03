@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import print_function
 
 """
 Many pieces of code are based on qtile.
@@ -18,7 +19,10 @@ Window
 """
 
 from collections import defaultdict
+from functools import  reduce
+import operator
 import asyncio
+# import trollius as asyncio
 import signal
 import os
 
@@ -29,9 +33,8 @@ import xcffib.randr
 import xcffib.xproto
 import xcffib
 
-from defs import XCB_CONN_ERRORS, WINDOW_TYPES, PROPERTYMAP
+from defs import XCB_CONN_ERRORS, WINDOW_TYPES, PROPERTYMAP, SUPPORTED_ATOMS, ModMasks
 from xkeysyms import keysyms
-
 
 
 # TODO: have no idea what is this class about.
@@ -69,7 +72,7 @@ class MaskMap:
         return mask, values
 
 
-# TODO: stolen from qtile. Probably, we want to refactor it.
+# TODO: stolen from qtile. Probably, we want to re-factor it.
 class AtomCache:
     def __init__(self, conn):
         self.conn = conn
@@ -146,7 +149,7 @@ class Window:
           self.wid, mask, values
       )
 
-  # move this code to WM
+  # TODO: move this code to WM
   def set_prop(self, name, value, type=None, format=None):
       """
           name: String Atom name
@@ -181,7 +184,7 @@ class Window:
           value
       ).check()
 
-  def __lt__(self, other):
+  def __lt__(self, other):  # used for sorting and comparison
     return True
 
   def __repr__(self):
@@ -190,51 +193,6 @@ class Window:
 
 AttributeMasks = MaskMap(CW)
 
-SUPPORTED_ATOMS = [
-    # From http://standards.freedesktop.org/wm-spec/latest/ar01s03.html
-    '_NET_SUPPORTED',
-    '_NET_CLIENT_LIST',
-    '_NET_CLIENT_LIST_STACKING',
-    '_NET_CURRENT_DESKTOP',
-    '_NET_ACTIVE_WINDOW',
-    # '_NET_WORKAREA',
-    '_NET_SUPPORTING_WM_CHECK',
-    # From http://standards.freedesktop.org/wm-spec/latest/ar01s05.html
-    '_NET_WM_NAME',
-    '_NET_WM_VISIBLE_NAME',
-    '_NET_WM_ICON_NAME',
-    '_NET_WM_DESKTOP',
-    '_NET_WM_WINDOW_TYPE',
-    '_NET_WM_STATE',
-    '_NET_WM_STRUT',
-    '_NET_WM_STRUT_PARTIAL',
-    '_NET_WM_PID',
-]
-
-
-ModMasks = {
-    "shift": 1 << 0,
-    "lock": 1 << 1,
-    "control": 1 << 2,
-    "mod1": 1 << 3,
-    "mod2": 1 << 4,
-    "mod3": 1 << 5,
-    "mod4": 1 << 6,
-    "mod5": 1 << 7,
-}
-ModMapOrder = [
-    "shift",
-    "lock",
-    "control",
-    "mod1",
-    "mod2",
-    "mod3",
-    "mod4",
-    "mod5"
-]
-
-import operator
-from functools import  reduce
 
 def get_modmask(modifiers):
     """
@@ -254,7 +212,7 @@ def get_modmask(modifiers):
 
 
 class Keyboard:
-  """ Just service keyboard functions. """
+  """ Just keyboard service functions. """
   def __init__(self, xcb_setup, conn):
     self._conn = conn
     self.code_to_syms = {}
@@ -310,7 +268,8 @@ class WM:
             EventMask.SubstructureNotify |
             EventMask.SubstructureRedirect |
             EventMask.EnterWindow |
-            EventMask.LeaveWindow
+            EventMask.LeaveWindow |
+            EventMask.PropertyChange
         )
     )
 
@@ -326,7 +285,7 @@ class WM:
 
     # EVENTS THAT HAVE LITTLE USE FOR US...
     self.ignoreEvents = set([
-        xproto.KeyReleaseEvent,
+        # xproto.KeyReleaseEvent,  # TODO: is it really any useful?
         xproto.ReparentNotifyEvent,
         xproto.CreateNotifyEvent,
         # DWM handles this to help "broken focusing windows".
@@ -362,7 +321,8 @@ class WM:
 
     # standard events
     self.hook.register("MapRequest", self.handle_MapRequest)
-    self.hook.register("KeyPress", self.on_key_press)
+    self.hook.register("KeyPress",   self.on_key_press)
+    self.hook.register("KeyRelease", self.on_key_release)
 
   def grab_key(self, modifiers, key,  owner_events=False, window=None):
     """ Intercept this key when it is pressed. If owner_events=False then
@@ -379,8 +339,8 @@ class WM:
       window = self.root
 
     keycode = self.kbd.key_to_code(key)
-    print("keycode:", keycode)
     modmask = get_modmask(modifiers)  # TODO: move to Keyboard
+    event = ("on_key_press", modmask, keycode)
     pointer_mode = xproto.GrabMode.Async
     keyboard_mode = xproto.GrabMode.Async
     self._conn.core.GrabKey(
@@ -392,6 +352,23 @@ class WM:
         keyboard_mode
     )
     self.flush()
+    return event
+
+  def on_key_press(self, evname, xcb_event):
+    # Example x11trace output:
+    #   Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
+    modmap  = xcb_event.state
+    keycode = xcb_event.detail
+    print("pressed mod and key:", modmap, keycode)
+    event = ("on_key_press", modmap, keycode)
+    self.hook.fire(event)
+
+  def on_key_release(self, evname, xcb_event):
+    modmap  = xcb_event.state
+    keycode = xcb_event.detail
+    print("released mod and key:", modmap, keycode)
+    event = ("on_key_release", modmap, keycode)
+    self.hook.fire(event)
 
   def raise_window(self, window):
     """ Put window on top of others. TODO: what about focus? """
@@ -404,6 +381,7 @@ class WM:
 
   def focus_window(self, window):
     """ Let window receive mouse and keyboard events. """
+    # TODO: '_NET_ACTIVE_WINDOW'
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
     self.focus = window
 
@@ -442,10 +420,10 @@ class WM:
     else:
       window = self.windows[wid]
     self.show_window(window)
-    self.xsync()
 
   def show_window(self, window):
     self._conn.core.MapWindow(window.wid)
+    self.xsync()
 
   def finalize(self):
     """ This code is run when event loop is terminated. """
@@ -474,14 +452,6 @@ class WM:
         self._eventloop.run_forever()
     finally:
         self.finalize()
-
-  def on_key_press(self, evname, event):
-    # Example x11trace output:
-    #   Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
-    modmap  = event.state
-    keycode = event.detail
-    print("pressed mod and key:", modmap, keycode)
-    self.focus.kill()  # TODO: do not kill root :)
 
   def _xpoll(self):
     """ Fetch incomming events (if any) and call hooks. """
@@ -518,7 +488,6 @@ class WM:
       # Hence, we do not process these errors.
       except (WindowError, AccessError, DrawableError):
           pass
-
       except Exception as e:
           error_code = self._conn.has_error()
           if error_code:

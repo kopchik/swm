@@ -71,3 +71,46 @@ XCB_CONN_ERRORS = {
     6: 'XCB_CONN_CLOSED_INVALID_SCREEN',
     7: 'XCB_CONN_CLOSED_FDPASSING_FAILED',
 }
+
+SUPPORTED_ATOMS = [
+    # From http://standards.freedesktop.org/wm-spec/latest/ar01s03.html
+    '_NET_SUPPORTED',
+    '_NET_CLIENT_LIST',
+    '_NET_CLIENT_LIST_STACKING',
+    '_NET_CURRENT_DESKTOP',
+    '_NET_ACTIVE_WINDOW',
+    # '_NET_WORKAREA',
+    '_NET_SUPPORTING_WM_CHECK',
+    # From http://standards.freedesktop.org/wm-spec/latest/ar01s05.html
+    '_NET_WM_NAME',
+    '_NET_WM_VISIBLE_NAME',
+    '_NET_WM_ICON_NAME',
+    '_NET_WM_DESKTOP',
+    '_NET_WM_WINDOW_TYPE',
+    '_NET_WM_STATE',
+    '_NET_WM_STRUT',
+    '_NET_WM_STRUT_PARTIAL',
+    '_NET_WM_PID',
+]
+
+ModMasks = {
+    "shift": 1 << 0,
+    "lock": 1 << 1,
+    "control": 1 << 2,
+    "mod1": 1 << 3,
+    "mod2": 1 << 4,
+    "mod3": 1 << 5,
+    "mod4": 1 << 6,
+    "mod5": 1 << 7,
+}
+
+ModMapOrder = [
+    "shift",
+    "lock",
+    "control",
+    "mod1",
+    "mod2",
+    "mod3",
+    "mod4",
+    "mod5"
+]
