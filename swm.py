@@ -108,15 +108,44 @@ class AtomCache:
             self.insert(name=key)
         return self.atoms[key]
 
+AttributeMasks = MaskMap(CW)
+
+
+def get_modmask(modifiers):
+    """
+    Translate a modifier mask specified as a list of strings into an or-ed
+    bit representation.
+    """
+    masks = []
+    for i in modifiers:
+        try:
+            masks.append(ModMasks[i])
+        except KeyError:
+            raise KeyError("Unknown modifier: %s" % i)
+    if masks:
+        return reduce(operator.or_, masks)
+    else:
+        return 0
+
+
 
 class Screen:
-  """ Represent screen as seen by xrandr. """
+  """ Represents screen as seen by xrandr. """
   def __init__(self, root):
     self.root = root
 
 
 class Desktop:
   """ Class for virtual desktops. """
+  def __init__(self, windows=None):
+    if not windows:
+      windows = []
+    self.windows = windows
+    self.cur_focus = None
+    self.prev_focus = None
+
+  def get_next_focus():
+    raise NotImplementedError
 
 
 class Window:
@@ -139,9 +168,8 @@ class Window:
   def kill(self):
     self.wm.kill_window(self)
 
-  def move(self, x, y, dx, dy):
-    print("MOVING", self)
-    raise NotImplementedError
+  def move(self, *args, **kwargs):
+    self.wm.move_window(self, *args, **kwargs)
 
   def focus(self):
     self.wm.focus_window(self)
@@ -198,26 +226,6 @@ class Window:
     return "Window(%s)" % self.wid
 
 
-AttributeMasks = MaskMap(CW)
-
-
-def get_modmask(modifiers):
-    """
-    Translate a modifier mask specified as a list of strings into an or-ed
-    bit representation.
-    """
-    masks = []
-    for i in modifiers:
-        try:
-            masks.append(ModMasks[i])
-        except KeyError:
-            raise KeyError("Unknown modifier: %s" % i)
-    if masks:
-        return reduce(operator.or_, masks)
-    else:
-        return 0
-
-
 class Keyboard:
   """ Just keyboard service functions. """
   def __init__(self, xcb_setup, conn):
@@ -253,7 +261,7 @@ class WM:
   root  = None
   atoms = None
 
-  def __init__(self, display=None):
+  def __init__(self, display=None, desktops=None):
     # INIT SOME BASIC STUFF
     self.hook = Hook()
     self.windows = {}
@@ -261,6 +269,8 @@ class WM:
       display = os.environ.get("DISPLAY")
     self._conn = xcffib.connect(display=display)
     self.atoms = AtomCache(self._conn)
+    self.desktops = desktops or [Desktop()]
+    self.cur_desktop = self.desktops[0]
 
     # CREATE ROOT WINDOW
     xcb_setup = self._conn.get_setup()
@@ -297,6 +307,7 @@ class WM:
         # xproto.CreateNotifyEvent,
         # DWM handles this to help "broken focusing windows".
         xproto.MapNotifyEvent,
+        xproto.ConfigureNotifyEvent,
         xproto.LeaveNotifyEvent,
         xproto.FocusOutEvent,
         xproto.FocusInEvent,
@@ -309,14 +320,14 @@ class WM:
     self.xsync()  # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
-    self.query_tree()
-    self.focus = sorted(self.windows.values())[-1].focus()
+    self.scan()
+    self.cur_desktop.cur_focus = sorted(self.windows.values())[-1].focus()
 
 
     # TODO: self.scan() get list of already opened windows
     # TODO: self.update_net_desktops()
 
-    # setup event loop
+    # SETUP EVENT LOOP
     self._eventloop = asyncio.new_event_loop()
     self._eventloop.add_signal_handler(signal.SIGINT, self.stop)
     self._eventloop.add_signal_handler(signal.SIGTERM, self.stop)
@@ -335,9 +346,12 @@ class WM:
     self.hook.register("ConfigureRequest", self.on_configure_window)
     # TODO: DestroyNotify
 
-  def on_window_create(self, evname, xcb_event):
-    wid = xcb_event.window
+  def on_window_create(self, evname=None, xcb_event=None, wid=None):
+    if not wid:
+      wid = xcb_event.window
     window = Window(self, wid)
+    self.windows[wid] = window
+    self.cur_desktop.windows.append(window)
     self._conn.core.ChangeWindowAttributesChecked(
         wid, CW.EventMask, [EventMask.EnterWindow])
 
@@ -414,13 +428,25 @@ class WM:
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
     self.focus = window
 
-  def on_configure_window(self, xcb_event):
-    print("CONFIGURE WID", wid)
-    wid = xcb_event.window
-    print("CONFIGURE WID", wid)
+  def on_configure_window(self, _, event):
+      # TODO: code from fpwm
+      values = []
+      if event.value_mask & ConfigWindow.X:
+          values.append(event.x)
+      if event.value_mask & ConfigWindow.Y:
+          values.append(event.y)
+      if event.value_mask & ConfigWindow.Width:
+          values.append(event.width)
+      if event.value_mask & ConfigWindow.Height:
+          values.append(event.height)
+      if event.value_mask & ConfigWindow.BorderWidth:
+          values.append(event.border_width)
+      if event.value_mask & ConfigWindow.Sibling:
+          values.append(event.sibling)
+      if event.value_mask & ConfigWindow.StackMode:
+          values.append(event.stack_mode)
+      self._conn.core.ConfigureWindow(event.window, event.value_mask, values)
 
-  def configure_window(self, window):
-    TODO
   def create_window(self, x, y, width, height):
     """ Create a window. Right now only used for initialisation, see __init__. """
     wid = self._conn.generate_id()
@@ -439,17 +465,37 @@ class WM:
     )
     return Window(self, wid)
 
-  def query_tree(self):
-    """ Get all windows in the system. They form a hierarchy (tree). """
+  def scan(self):
+    """ Get all windows in the system. """
     q = self._conn.core.QueryTree(self.root.wid).reply()
     for wid in q.children:
-      window = Window(self, wid)
-      self.windows[wid] = window
+      if wid not in self.windows:
+        self.on_window_create(wid=wid)
     print("WINDOWS:", sorted(self.windows.values()))
 
   def show_window(self, window):
     self._conn.core.MapWindow(window.wid)
     self.xsync()
+
+  def move_window(self, window, x=None, y=None, dx=0, dy=1):
+    x, y, width, height = self.get_window_geometry(window)
+    if dx or dy:
+      x += dx
+      y += dy
+
+    mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
+    value = [x,y]
+    try:
+      print(value)
+      # TODO: what the hell is *Checked and check?
+      self._conn.core.ConfigureWindowChecked(window.wid, mask, value).check()
+      self.flush()
+    except Exception as e:
+      print(e)
+
+  def get_window_geometry(self, window):
+    geom = self._conn.core.GetGeometry(window.wid).reply()
+    return [geom.x, geom.y, geom.width, geom.height]
 
   def finalize(self):
     """ This code is run when event loop is terminated. """
@@ -561,17 +607,20 @@ class Hook:
       # except SupressEvent:
         # break
       except Exception as err:
-        msg="error on event {ev}: {err} (in {hdl})" \
-                .format(err=err, ev=event, hdl=handler)
+        msg="error on event {ev}: {err} ({typ}) (in {hdl})" \
+                .format(err=err, typ=type(err), ev=event, hdl=handler)
         print(msg)
 
 
 if __name__ == '__main__':
+  import subprocess
+  from collections import deque
   alt = 'mod1'
   right = 'Right'
   left = 'Left'
+  tab = 'Tab'
+  win = 'mod4'
 
-  import subprocess
   wm = WM()
 
   @wm.hook("window_enter")
@@ -588,15 +637,23 @@ if __name__ == '__main__':
     print("Current focus:", wm.focus)
     print("---------")
 
-
-  hdlr = wm.grab_key([alt], "Right")
-  @wm.hook(hdlr)
+  kbd_event = wm.grab_key([alt], right)
+  @wm.hook(kbd_event)
   def move_right(event):
     print("MOVING")
-    window = wm.focus
-    window.move(dx=20)
+    window = wm.cur_desktop.cur_focus
+    window.move(dx=20, dy=20)
 
-  wm.grab_key([alt], 'w')
+  kbd_event = wm.grab_key([win], 'n')
+  @wm.hook(kbd_event)
+  def switch_windows(event):
+    print("OPA")
+
+  kbd_event = wm.grab_key([alt], 'x')
+  @wm.hook(kbd_event)
+  def switch_windows(event):
+    subprocess.Popen("urxvt")
+
   # subprocess.Popen("xcalc")
   # subprocess.Popen("xterm")
   subprocess.Popen("urxvt")
