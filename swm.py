@@ -7,15 +7,6 @@ Many pieces of code are based on qtile.
 Some useful literature to read:
   1. Extended Window Manager Hints (EWMH) http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
   2. Inter-Client Communication Conventions Manual (ICCM) http://tronche.com/gui/x/icccm/
-
-Classes and their functions
-----------------------------
-1. WM (WindowManager)
-  Does all dirty work with XCB. Other classes should work with this one to communicate with X.
-Screen
-  Currently does nothing.
-Window
-  Stores the state of the window. Has methods to move, resize, fullscreen, rise, hide and some others.
 """
 
 from collections import defaultdict
@@ -144,7 +135,27 @@ class Desktop:
     self.cur_focus = None
     self.prev_focus = None
 
-  def get_next_focus():
+  def get_prev_focus(self):
+    raise NotImplementedError
+
+  def get_next_focus(self):
+    raise NotImplementedError
+
+  def show(self):
+    for window in self.windows:
+      window.show()
+
+  def hide(self):
+    for window in self.windows:
+      window.hide()
+
+  def window_add(self, window):
+    if not self.cur_focus:
+      self.cur_focus = window
+    raise NotImplementedError
+
+  def window_remove(self, window):
+    self.windows.remove(window)
     raise NotImplementedError
 
 
@@ -154,26 +165,54 @@ class Window:
     assert isinstance(wm, WM),  "wid must be an instance of WM"
     self.wid = wid
     self.wm = wm
+    self._conn = self.wm._conn
 
   def show(self):
-    self.wm.show_window(self)
-
-  def rise(self):
-    # TODO: call self.show() first?
-    self.wm.raise_window(self)
+    self._conn.core.MapWindow(self.wid).reply()  # TODO: is sync needed?
 
   def hide(self):
     self.wm.hide_window(self)
 
-  def kill(self):
-    self.wm.kill_window(self)
+  def rise(self):
+    """ Put window on top of others. TODO: what about focus? """
+    mode = xproto.StackMode.Above
+    self._conn.core.ConfigureWindow(self.wid, xproto.ConfigWindow.StackMode, [mode])
 
-  def move(self, *args, **kwargs):
-    self.wm.move_window(self, *args, **kwargs)
+  def kill(self):
+    """ This is what happens to windows when Alt-F4 or Ctrl-w is pressed. """
+    self._conn.core.KillClient(self.wid)
+
+  def move(self, x=None, y=None, dx=0, dy=0):
+    if dx or dy:
+      x, y, width, height = self.geometry
+      x += dx
+      y += dy
+
+    mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
+    value = [x, y]
+    self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
+
+  def resize(self, x=None, y=None, dx=0, dy=0):
+    if dx or dy:
+      x, y, width, height = self.geometry
+      width += dx
+      height += dy
+
+    mask = xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
+    value = [width, height]
+    self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
 
   def focus(self):
-    self.wm.focus_window(self)
-    return self
+    """ Let window receive mouse and keyboard events. """
+    # TODO: '_NET_ACTIVE_WINDOW'
+    self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
+                                  self.wid, xproto.Time.CurrentTime)
+    self.wm.cur_desktop.cur_focus = self
+
+  @property
+  def geometry(self):
+    geom = self._conn.core.GetGeometry(self.wid).reply()
+    return [geom.x, geom.y, geom.width, geom.height]
 
   def grab_key(self, modifiers, key):
     self.wm.grab_key(modifiers, key, window=self)
@@ -278,6 +317,7 @@ class WM:
     self.xcb_default_screen = xcb_screens[self._conn.pref_screen]
     root_wid = self.xcb_default_screen.root
     self.root = Window(self, root_wid)
+    self.windows[root_wid] = self.root
 
     self.root.set_attr(
         eventmask=(
@@ -368,8 +408,8 @@ class WM:
       self.windows[wid] = window
     else:
       window = self.windows[wid]
-    self.show_window(window)
-    self.focus_window(window)
+    window.show()
+    window.focus()
 
   def grab_key(self, modifiers, key,  owner_events=False, window=None):
     """ Intercept this key when it is pressed. If owner_events=False then
@@ -413,21 +453,6 @@ class WM:
     keycode = xcb_event.detail
     event = ("on_key_release", modmap, keycode)
     self.hook.fire(event)
-
-  def raise_window(self, window):
-    """ Put window on top of others. TODO: what about focus? """
-    mode = xproto.StackMode.Above
-    self._conn.core.ConfigureWindow(window.wid, xproto.ConfigWindow.StackMode, [mode])
-
-  def kill_window(self, window):
-    """ This is what happens to windows when Alt-F4 or Ctrl-w is pressed. """
-    self._conn.core.KillClient(window.wid)
-
-  def focus_window(self, window):
-    """ Let window receive mouse and keyboard events. """
-    # TODO: '_NET_ACTIVE_WINDOW'
-    self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
-    self.cur_desktop.cur_focus = window
 
   def on_configure_window(self, _, event):
       # TODO: code from fpwm
@@ -474,25 +499,6 @@ class WM:
         self.on_window_create(wid=wid)
     print("WINDOWS:", sorted(self.windows.values()))
 
-  def show_window(self, window):
-    self._conn.core.MapWindow(window.wid)
-    self.xsync()
-
-  def move_window(self, window, x=None, y=None, dx=0, dy=0):
-    if dx or dy:
-      x, y, width, height = self.get_window_geometry(window)
-      x += dx
-      y += dy
-
-    mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
-    value = [x, y]
-    # TODO: what the hell is *Checked and check?
-    self._conn.core.ConfigureWindowChecked(window.wid, mask, value).check()
-    # self.flush()
-
-  def get_window_geometry(self, window):
-    geom = self._conn.core.GetGeometry(window.wid).reply()
-    return [geom.x, geom.y, geom.width, geom.height]
 
   def finalize(self):
     """ This code is run when event loop is terminated. """
@@ -611,60 +617,62 @@ class Hook:
 
 if __name__ == '__main__':
   import subprocess
-  from collections import deque
-  alt = 'mod1'
+  up, down, left, right = 'Up', 'Down', 'Left', 'Right'
+  win = fail = 'mod4'
   ctrl = control = 'control'
-  right = 'Right'
-  left = 'Left'
+  shift = 'shift'
+  alt = 'mod1'
   tab = 'Tab'
-  up = 'Up'
-  down = 'Down'
-  win = 'mod4'
 
   wm = WM()
 
   @wm.hook("window_enter")
   def on_window_enter(event, window):
-    print("focusing")
+    # do not switch focus when moving over root window
+    if window == wm.root:
+      return
     window.focus()
     window.rise()
 
-  kbd_event = wm.grab_key([alt], 's')
-  @wm.hook(kbd_event)
-  def status(*args, **kwargs):
-    print("=========")
-    print("All windows known by WM:", wm.windows)
-    print("Current focus:", wm.focus)
-    print("---------")
+  # RESIZE
+  @wm.hook(wm.grab_key([ctrl, shift], right))
+  def expand_width(event):
+    wm.cur_desktop.cur_focus.resize(dx=20)
 
+  @wm.hook(wm.grab_key([ctrl, shift], left))
+  def shrink_width(event):
+    wm.cur_desktop.cur_focus.resize(dx=-20)
+
+  @wm.hook(wm.grab_key([ctrl, shift], up))
+  def expand_width(event):
+    wm.cur_desktop.cur_focus.resize(dy=-20)
+
+  @wm.hook(wm.grab_key([ctrl, shift], down))
+  def shrink_width(event):
+    wm.cur_desktop.cur_focus.resize(dy=20)
+
+  # MOVE
   @wm.hook(wm.grab_key([ctrl], right))
   def move_right(event):
-    window = wm.cur_desktop.cur_focus
-    window.move(dx=20)
+    wm.cur_desktop.cur_focus.move(dx=20)
 
   @wm.hook(wm.grab_key([ctrl], left))
-  def move_right(event):
-    window = wm.cur_desktop.cur_focus
-    window.move(dx=-20)
+  def move_left(event):
+    wm.cur_desktop.cur_focus.move(dx=-20)
 
   @wm.hook(wm.grab_key([ctrl], up))
-  def move_right(event):
-    window = wm.cur_desktop.cur_focus
-    window.move(dy=-20)
+  def move_up(event):
+    wm.cur_desktop.cur_focus.move(dy=-20)
 
   @wm.hook(wm.grab_key([ctrl], down))
-  def move_right(event):
-    window = wm.cur_desktop.cur_focus
-    window.move(dy=20)
+  def move_down(event):
+    wm.cur_desktop.cur_focus.move(dy=20)
 
-
-  kbd_event = wm.grab_key([win], 'n')
-  @wm.hook(kbd_event)
+  @wm.hook(wm.grab_key([win], 'n'))
   def switch_windows(event):
     print("OPA")
 
-  kbd_event = wm.grab_key([alt], 'x')
-  @wm.hook(kbd_event)
+  @wm.hook(wm.grab_key([alt], 'x'))
   def switch_windows(event):
     subprocess.Popen("urxvt")
 
