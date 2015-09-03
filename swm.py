@@ -27,7 +27,7 @@ import signal
 import os
 
 from xcffib.xproto import WindowError, AccessError, DrawableError
-from xcffib.xproto import CW, WindowClass, EventMask
+from xcffib.xproto import CW, WindowClass, EventMask, ConfigWindow
 from xcffib import xproto
 import xcffib.randr
 import xcffib.xproto
@@ -121,11 +121,17 @@ class Desktop:
 
 class Window:
   def __init__(self, wm, wid):
+    assert isinstance(wid, int), "wid must be int"
+    assert isinstance(wm, WM),  "wid must be an instance of WM"
     self.wid = wid
     self.wm = wm
 
   def show(self):
     self.wm.show_window(self)
+
+  def rise(self):
+    # TODO: call self.show() first?
+    self.wm.raise_window(self)
 
   def hide(self):
     self.wm.hide_window(self)
@@ -134,6 +140,7 @@ class Window:
     self.wm.kill_window(self)
 
   def move(self, x, y, dx, dy):
+    print("MOVING", self)
     raise NotImplementedError
 
   def focus(self):
@@ -285,9 +292,9 @@ class WM:
 
     # EVENTS THAT HAVE LITTLE USE FOR US...
     self.ignoreEvents = set([
-        # xproto.KeyReleaseEvent,  # TODO: is it really any useful?
+        # xproto.KeyReleaseEvent,
         xproto.ReparentNotifyEvent,
-        xproto.CreateNotifyEvent,
+        # xproto.CreateNotifyEvent,
         # DWM handles this to help "broken focusing windows".
         xproto.MapNotifyEvent,
         xproto.LeaveNotifyEvent,
@@ -319,10 +326,35 @@ class WM:
     fd = self._conn.get_file_descriptor()
     self._eventloop.add_reader(fd, self._xpoll)
 
-    # standard events
-    self.hook.register("MapRequest", self.handle_MapRequest)
+    # HANDLE STANDARD EVENTS
+    self.hook.register("MapRequest", self.on_map_request)
     self.hook.register("KeyPress",   self.on_key_press)
     self.hook.register("KeyRelease", self.on_key_release)
+    self.hook.register("CreateNotify", self.on_window_create)
+    self.hook.register("EnterNotify", self.on_window_enter)
+    self.hook.register("ConfigureRequest", self.on_configure_window)
+    # TODO: DestroyNotify
+
+  def on_window_create(self, evname, xcb_event):
+    wid = xcb_event.window
+    window = Window(self, wid)
+    self._conn.core.ChangeWindowAttributesChecked(
+        wid, CW.EventMask, [EventMask.EnterWindow])
+
+  def on_window_enter(self, evname, xcb_event):
+    wid = xcb_event.event
+    window = self.windows[wid]
+    self.hook.fire("window_enter", window)
+
+  def on_map_request(self, evname, xcb_event):
+    """ Map request is a request to draw the window on screen. """
+    wid = xcb_event.window
+    if wid not in self.windows:
+      window = Window(self, wid)
+      self.windows[wid] = window
+    else:
+      window = self.windows[wid]
+    self.show_window(window)
 
   def grab_key(self, modifiers, key,  owner_events=False, window=None):
     """ Intercept this key when it is pressed. If owner_events=False then
@@ -331,7 +363,7 @@ class WM:
     # Here is how X works with keys:
     # key => keysym => keycode
     # where `key' is something like 'a', 'b' or 'Enter',
-    # `keysum' is what should be written on they key cap (phisical keyboard)
+    # `keysum' is what should be written on they key cap (physical keyboard)
     # and `keycode' is a number reported by the keyboard when the key is pressed.
     # Modifiers are keys like Shift, Alt, Win and some other buttons.
 
@@ -355,18 +387,15 @@ class WM:
     return event
 
   def on_key_press(self, evname, xcb_event):
-    # Example x11trace output:
-    #   Event KeyPress(2) keycode=0x19 time=0x05eec6bb root=0x0000018e event=0x0000018e child=0x00400017 root-x=155 root-y=252 event-x=155 event-y=252 state=Mod1 same-screen=true(0x01)
+    # TODO: ignore capslock, scrolllock and other modifiers?
     modmap  = xcb_event.state
     keycode = xcb_event.detail
-    print("pressed mod and key:", modmap, keycode)
     event = ("on_key_press", modmap, keycode)
     self.hook.fire(event)
 
   def on_key_release(self, evname, xcb_event):
     modmap  = xcb_event.state
     keycode = xcb_event.detail
-    print("released mod and key:", modmap, keycode)
     event = ("on_key_release", modmap, keycode)
     self.hook.fire(event)
 
@@ -385,6 +414,13 @@ class WM:
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, window.wid, xproto.Time.CurrentTime)
     self.focus = window
 
+  def on_configure_window(self, xcb_event):
+    print("CONFIGURE WID", wid)
+    wid = xcb_event.window
+    print("CONFIGURE WID", wid)
+
+  def configure_window(self, window):
+    TODO
   def create_window(self, x, y, width, height):
     """ Create a window. Right now only used for initialisation, see __init__. """
     wid = self._conn.generate_id()
@@ -410,16 +446,6 @@ class WM:
       window = Window(self, wid)
       self.windows[wid] = window
     print("WINDOWS:", sorted(self.windows.values()))
-
-  def handle_MapRequest(self, evname, xcb_event):
-    """ Map request is a request to draw the window on screen. """
-    wid = xcb_event.window
-    if wid not in self.windows:
-      window = Window(self, wid)
-      self.windows[wid] = window
-    else:
-      window = self.windows[wid]
-    self.show_window(window)
 
   def show_window(self, window):
     self._conn.core.MapWindow(window.wid)
@@ -506,28 +532,73 @@ class SupressEvent(Exception):
 
 
 class Hook:
-  """ A callback dispatcher. """
+  """ Simple callback dispatcher. """
   def __init__(self):
     self.cb_map = defaultdict(list)
+
+  def decor(self, event):
+    def wrap(cb):
+      self.register(event, cb)
+      return cb
+    return wrap
+  __call__ = decor
 
   def register(self, event, cb):
     self.cb_map[event].append(cb)
 
+  def has_hook(self, event):
+    return event in self.cb_map
+
   def fire(self, event, *args, **kwargs):
-    handlers = self.cb_map[event]
-    if not handlers:
+    if event not in self.cb_map:
        print("no handler for", event)
+       return
+
+    handlers = self.cb_map[event]
     for handler in handlers:
       try:
         handler(event, *args, **kwargs)
-      except SupressEvent:
-        break
-      except Exception as e:
-        print("err in hook", handler, e, "event:", event)
+      # except SupressEvent:
+        # break
+      except Exception as err:
+        msg="error on event {ev}: {err} (in {hdl})" \
+                .format(err=err, ev=event, hdl=handler)
+        print(msg)
 
 
 if __name__ == '__main__':
+  alt = 'mod1'
+  right = 'Right'
+  left = 'Left'
+
+  import subprocess
   wm = WM()
-  wm.grab_key(['mod1'], 'w')
+
+  @wm.hook("window_enter")
+  def on_window_enter(event, window):
+    print("focusing")
+    window.focus()
+    window.rise()
+
+  kbd_event = wm.grab_key([alt], 's')
+  @wm.hook(kbd_event)
+  def status(*args, **kwargs):
+    print("=========")
+    print("All windows known by WM:", wm.windows)
+    print("Current focus:", wm.focus)
+    print("---------")
+
+
+  hdlr = wm.grab_key([alt], "Right")
+  @wm.hook(hdlr)
+  def move_right(event):
+    print("MOVING")
+    window = wm.focus
+    window.move(dx=20)
+
+  wm.grab_key([alt], 'w')
+  # subprocess.Popen("xcalc")
+  # subprocess.Popen("xterm")
+  subprocess.Popen("urxvt")
   wm.loop()
   print("BYE!")
