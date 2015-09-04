@@ -5,6 +5,7 @@ from __future__ import print_function
 Many pieces of code are based on qtile.
 
 Some useful literature to read:
+  0. http://xcb.freedesktop.org/windowcontextandmanipulation/
   1. Extended Window Manager Hints (EWMH) http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
   2. Inter-Client Communication Conventions Manual (ICCM) http://tronche.com/gui/x/icccm/
 """
@@ -119,12 +120,21 @@ def get_modmask(modifiers):
         return 0
 
 
-
-class Screen:
+class Xrandr:
   """ Represents screen as seen by xrandr. """
-  def __init__(self, root):
+  def __init__(self, root, conn):
+    self.screens = []
     self.root = root
+    self._conn = conn(xcffib.randr.key)
+    for i in self._conn.GetScreenResources(root.wid).reply().crtcs:
+      info = self._conn.GetCrtcInfo(i, xcffib.CurrentTime).reply()
+      self.screens.append(info)
+    self.screen = self.screens[0]
 
+
+    # reply = xcffib.randr.randrExtension.GetScreenResourcesCurrent(root).reply()
+    # reply = xcffib.randr.`(runtime.viewport.root).reply()
+    # print("XXXXXXXX", reply)
 
 class Desktop:
   """ Class for virtual desktops. """
@@ -166,6 +176,7 @@ class Window:
     self.wid = wid
     self.wm = wm
     self._conn = self.wm._conn
+    self.prev_geometry = None
 
   def show(self):
     self._conn.core.MapWindow(self.wid).reply()  # TODO: is sync needed?
@@ -177,6 +188,14 @@ class Window:
     """ Put window on top of others. TODO: what about focus? """
     mode = xproto.StackMode.Above
     self._conn.core.ConfigureWindow(self.wid, xproto.ConfigWindow.StackMode, [mode])
+
+  def focus(self):
+    """ Let window receive mouse and keyboard events. """
+    # TODO: '_NET_ACTIVE_WINDOW'
+    self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
+                                  self.wid, xproto.Time.CurrentTime)
+    self.wm.cur_desktop.cur_focus = self
+    return self
 
   def kill(self):
     """ This is what happens to windows when Alt-F4 or Ctrl-w is pressed. """
@@ -191,9 +210,13 @@ class Window:
     mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
     value = [x, y]
     self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
+    return self
 
   def resize(self, x=None, y=None, dx=0, dy=0):
-    if dx or dy:
+    if x and y:
+      width = x
+      height = y
+    if dx and dy:
       x, y, width, height = self.geometry
       width += dx
       height += dy
@@ -202,19 +225,45 @@ class Window:
     value = [width, height]
     self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
 
-  def focus(self):
-    """ Let window receive mouse and keyboard events. """
-    # TODO: '_NET_ACTIVE_WINDOW'
-    self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
-                                  self.wid, xproto.Time.CurrentTime)
-    self.wm.cur_desktop.cur_focus = self
+  def toggle_maximize(self):
+    if self.prev_geometry:
+      self.set_geometry(*self.prev_geometry)
+      self.prev_geometry = None
+    else:
+      self.prev_geometry = self.geometry
+      screen = self.wm.xrandr.screen
+      self.set_geometry(x=1,y=1, width=screen.width, height=screen.height)
+      self.rise()
 
   @property
   def geometry(self):
     geom = self._conn.core.GetGeometry(self.wid).reply()
     return [geom.x, geom.y, geom.width, geom.height]
 
+  def set_geometry(self, x=None,y=None, width=None, height=None):
+    mask = 0
+    values = []
+    if x is not None:
+      mask |= xproto.ConfigWindow.X
+      values.append(x)
+    if y is not None:
+      mask |= xproto.ConfigWindow.Y
+      values.append(y)
+    if width is not None:
+      mask |= xproto.ConfigWindow.Width
+      values.append(width)
+    if height is not None:
+      mask |= xproto.ConfigWindow.Height
+      values.append(height)
+    self._conn.core.ConfigureWindowChecked(self.wid, mask, values).check()  # TODO: what the hell is *Checked and check?
+
+  def warp(self):
+    print("TODO WARPING DOES NOT WORK :(")
+    self._conn.core.WarpPointer(0, self.wid, 0,0,0,0, 100, 100)
+    return self
+
   def grab_key(self, modifiers, key):
+    """ Don't know why one would do window-specific hotkeys, but here it is! """
     self.wm.grab_key(modifiers, key, window=self)
 
   def set_attr(self, **kwargs):
@@ -357,14 +406,12 @@ class WM:
     self.kbd = Keyboard(xcb_setup, self._conn)
 
     # FLUSH PENDING STUFF
-    self.xsync()  # apply settings
+    self.xsync()    # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
     self.scan()
     self.cur_desktop.cur_focus = sorted(self.windows.values())[-1].focus()
 
-
-    # TODO: self.scan() get list of already opened windows
     # TODO: self.update_net_desktops()
 
     # SETUP EVENT LOOP
@@ -385,6 +432,9 @@ class WM:
     self.hook.register("EnterNotify", self.on_window_enter)
     self.hook.register("ConfigureRequest", self.on_configure_window)
     # TODO: DestroyNotify
+
+    self.xrandr = Xrandr(root=self.root, conn=self._conn)
+
 
   def on_window_create(self, evname=None, xcb_event=None, wid=None):
     if not wid:
@@ -415,6 +465,7 @@ class WM:
     """ Intercept this key when it is pressed. If owner_events=False then
         the window in focus will not receive it. This is useful from WM hotkeys.
     """
+    # TODO: check if key already grabbed?
     # Here is how X works with keys:
     # key => keysym => keycode
     # where `key' is something like 'a', 'b' or 'Enter',
@@ -627,7 +678,7 @@ if __name__ == '__main__':
   wm = WM()
 
   @wm.hook("window_enter")
-  def on_window_enter(event, window):
+  def switch_focus(event, window):
     # do not switch focus when moving over root window
     if window == wm.root:
       return
@@ -666,15 +717,33 @@ if __name__ == '__main__':
 
   @wm.hook(wm.grab_key([ctrl], down))
   def move_down(event):
-    wm.cur_desktop.cur_focus.move(dy=20)
+    wm.cur_desktop.cur_focus.move(dy=20).warp()
 
-  @wm.hook(wm.grab_key([win], 'n'))
+  # FOCUS
+  @wm.hook(wm.grab_key([ctrl], 'p'))
   def switch_windows(event):
-    print("OPA")
+    desktop = wm.cur_desktop
+    cur = desktop.cur_focus
+    cur_idx = desktop.windows.index(cur)
+    nxt = desktop.windows[cur_idx-1]
+    switch_focus("some_fake_ev", nxt)
 
+  @wm.hook(wm.grab_key([ctrl], 'n'))
+  def switch_windows(event):
+    desktop = wm.cur_desktop
+    cur = desktop.cur_focus
+    cur_idx = desktop.windows.index(cur)
+    nxt = desktop.windows[cur_idx+1]
+    switch_focus("some_fake_ev", nxt)
+
+  # OTHER
   @wm.hook(wm.grab_key([alt], 'x'))
-  def switch_windows(event):
+  def spawn_console(event):
     subprocess.Popen("urxvt")
+
+  @wm.hook(wm.grab_key([ctrl], 'm'))
+  def maximize(event):
+    wm.cur_desktop.cur_focus.toggle_maximize()
 
   # subprocess.Popen("xcalc")
   # subprocess.Popen("xterm")
