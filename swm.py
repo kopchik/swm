@@ -208,27 +208,18 @@ class Window:
       x, y, width, height = self.geometry
       x += dx
       y += dy
-
-    mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y
-    value = [x, y]
-    self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
-    return self
+    self.set_geometry(x=x, y=y)
 
   def resize(self, x=None, y=None, dx=0, dy=0):
     assert not ((x and y) and (dx or dy)), "wrong arguments"
     if x and y:
       width = x
       height = y
-    elif dx or dy:
+    else:
       x, y, width, height = self.geometry
       width += dx
       height += dy
-    else:
-      raise Exception("wrong arguments for resize")
-
-    mask = xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
-    value = [width, height]
-    self._conn.core.ConfigureWindowChecked(self.wid, mask, value).check()  # TODO: what the hell is *Checked and check?
+    self.set_geometry(width=width, height=height)
 
   def toggle_maximize(self):
     if self.prev_geometry:
