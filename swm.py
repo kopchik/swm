@@ -259,7 +259,7 @@ class Window:
 
   def warp(self):
     print("TODO WARPING DOES NOT WORK :(")
-    self._conn.core.WarpPointer(0, self.wid, 0,0,0,0, 100, 100)
+    self._conn.core.WarpPointer(0, self.wid, 0,0,0,0, 10, 10)
     return self
 
   def grab_key(self, modifiers, key):
@@ -391,16 +391,16 @@ class WM:
 
     # EVENTS THAT HAVE LITTLE USE FOR US...
     self.ignoreEvents = set([
-        # xproto.KeyReleaseEvent,
-        xproto.ReparentNotifyEvent,
-        # xproto.CreateNotifyEvent,
+        # "KeyRelease",
+        "ReparentNotify",
+        "CreateNotify",
         # DWM handles this to help "broken focusing windows".
-        xproto.MapNotifyEvent,
-        xproto.ConfigureNotifyEvent,
-        xproto.LeaveNotifyEvent,
-        xproto.FocusOutEvent,
-        xproto.FocusInEvent,
-        xproto.NoExposureEvent
+        "MapNotify",
+        "ConfigureNotify",
+        "LeaveNotify",
+        "FocusOut",
+        "FocusIn",
+        "NoExposure",
     ])
     # KEYBOARD
     self.kbd = Keyboard(xcb_setup, self._conn)
@@ -409,7 +409,12 @@ class WM:
     self.xsync()    # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
-    self.scan()
+
+    # NOW IT'S TIME TO GET PHYSICAL SCREEN CONFIGURATION
+    self.xrandr = Xrandr(root=self.root, conn=self._conn)
+
+    # GET LIST OF ALL PRESENT WINDOWS AND FOCUS ON THE LAST
+    self.scan()     #
     self.cur_desktop.cur_focus = sorted(self.windows.values())[-1].focus()
 
     # TODO: self.update_net_desktops()
@@ -431,10 +436,10 @@ class WM:
     self.hook.register("CreateNotify", self.on_window_create)
     self.hook.register("EnterNotify", self.on_window_enter)
     self.hook.register("ConfigureRequest", self.on_configure_window)
+    self.hook.register("MotionNotify", self.on_mouse_event)
+    self.hook.register("ButtonPress", self.on_mouse_event)
+    self.hook.register("ButtonRelease", self.on_mouse_event)
     # TODO: DestroyNotify
-
-    self.xrandr = Xrandr(root=self.root, conn=self._conn)
-
 
   def on_window_create(self, evname=None, xcb_event=None, wid=None):
     if not wid:
@@ -489,7 +494,7 @@ class WM:
         pointer_mode,
         keyboard_mode
     )
-    self.flush()
+    self.flush()  # TODO: do we need this?
     return event
 
   def on_key_press(self, evname, xcb_event):
@@ -504,6 +509,43 @@ class WM:
     keycode = xcb_event.detail
     event = ("on_key_release", modmap, keycode)
     self.hook.fire(event)
+
+  def grab_mouse(self, modifiers, button, owner_events=False, window=None):
+  # http://www.x.org/archive/X11R7.7/doc/man/man3/xcb_grab_button.3.xhtml
+    wid = (window or self.root).wid
+    event_mask = xcffib.xproto.EventMask.ButtonPress |    \
+                 xcffib.xproto.EventMask.ButtonRelease |  \
+                 xcffib.xproto.EventMask.Button1Motion
+    modmask = get_modmask(modifiers)
+    pointer_mode = xproto.GrabMode.Async      # I don't know what it is
+    keyboard_mode = xproto.GrabMode.Async     # do not block other keyboard events
+    confine_to = xcffib.xproto.Atom._None     # do not restrict cursor movements
+    cursor = xcffib.xproto.Atom._None         # do not change cursor
+    event = ("on_mouse", modmask, button)     # event to be used in hooks
+
+    self._conn.core.GrabButton(
+        owner_events,
+        wid,
+        event_mask,
+        pointer_mode,
+        keyboard_mode,
+        confine_to,
+        cursor,
+        button,
+        modmask,
+    )
+    self.flush()  # TODO: do we need this?
+    return event
+
+  def on_mouse_event(self, evname, xcb_event):
+    """evname is one of ButtonPress, ButtonRelease or MotionNotify."""
+    # l = [(attr, getattr(xcb_event, attr)) for attr in sorted(dir(xcb_event)) if not attr.startswith('_')]
+    # print(evname)
+    # print(l)
+    button = xcb_event.detail
+    modmask = xcb_event.state & 0xff  # TODO: is the mask correct?
+    event = ("on_mouse", modmask, button)
+    self.hook.fire(event, evname, xcb_event)
 
   def on_configure_window(self, _, event):
       # TODO: code from fpwm
@@ -584,18 +626,16 @@ class WM:
     while True:
       # TODO: too long try ... catch
       try:
-          e = self._conn.poll_for_event()  # TODO: renane to XCB event
-          if not e:
+          xcb_event = self._conn.poll_for_event()
+          if not xcb_event:
             break
-
-          evname = e.__class__.__name__
+          evname = xcb_event.__class__.__name__
           if evname.endswith("Event"):
               evname = evname[:-5]
-
-          if e.__class__ in self.ignoreEvents:
-            print("ignoring", e)
+          if evname in self.ignoreEvents:
+            print("ignoring", xcb_event)
             continue
-          self.hook.fire(evname, e)
+          self.hook.fire(evname, xcb_event)
       # *Original description:
       # Catch some bad X exceptions. Since X is event based, race
       # conditions can occur almost anywhere in the code. For
@@ -605,13 +645,12 @@ class WM:
       # will throw a WindowError exception. We can essentially
       # ignore it, since the window is already dead and we've got
       # another event in the queue notifying us to clean it up.
-      # *My description:
+      # *My description*:
       # Ok, kids, today I'll teach you how to write reliable interprise
-      # software! You just catch all exceptions in a top-level loop
+      # software! You just catch all the exceptions in the top-level loop
       # and ignore them. No, I'm kidding, these exceptions are no use
       # for us because we don't care if a window cannot be drawn or something.
       # We actually only need to handle just a few events and ignore the rest.
-      # Hence, we do not process these errors.
       except (WindowError, AccessError, DrawableError):
           pass
       except Exception as e:
@@ -674,8 +713,28 @@ if __name__ == '__main__':
   shift = 'shift'
   alt = 'mod1'
   tab = 'Tab'
-
+  MouseL = 1
+  MouseC = 2
+  MouseR = 3
   wm = WM()
+
+  orig_coordinates = None
+  orig_geometry = None
+  @wm.hook(wm.grab_mouse([ctrl], MouseL))
+  def on_mouse(evhandler, evtype, xcb_ev):
+    global orig_coordinates
+    global orig_geometry
+    if evtype == "ButtonPress":
+      orig_coordinates = xcb_ev.root_x, xcb_ev.root_y
+      orig_geometry = wm.cur_desktop.cur_focus.geometry
+      print(orig_coordinates, orig_geometry)
+    elif evtype ==  "ButtonRelease":
+      orig_coordinates = None
+      orig_geometry = None
+      print("RELEASE")
+    elif evtype ==  "MotionNotify":
+      print("SOMETHING IS MOVING....")
+
 
   @wm.hook("window_enter")
   def switch_focus(event, window):
@@ -695,11 +754,11 @@ if __name__ == '__main__':
     wm.cur_desktop.cur_focus.resize(dx=-20)
 
   @wm.hook(wm.grab_key([ctrl, shift], up))
-  def expand_width(event):
+  def expand_height(event):
     wm.cur_desktop.cur_focus.resize(dy=-20)
 
   @wm.hook(wm.grab_key([ctrl, shift], down))
-  def shrink_width(event):
+  def shrink_height(event):
     wm.cur_desktop.cur_focus.resize(dy=20)
 
   # MOVE
@@ -721,7 +780,7 @@ if __name__ == '__main__':
 
   # FOCUS
   @wm.hook(wm.grab_key([ctrl], 'p'))
-  def switch_windows(event):
+  def next_window(event):
     desktop = wm.cur_desktop
     cur = desktop.cur_focus
     cur_idx = desktop.windows.index(cur)
@@ -729,7 +788,7 @@ if __name__ == '__main__':
     switch_focus("some_fake_ev", nxt)
 
   @wm.hook(wm.grab_key([ctrl], 'n'))
-  def switch_windows(event):
+  def prev_window(event):
     desktop = wm.cur_desktop
     cur = desktop.cur_focus
     cur_idx = desktop.windows.index(cur)
