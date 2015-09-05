@@ -187,14 +187,16 @@ class Window:
   def rise(self):
     """ Put window on top of others. TODO: what about focus? """
     mode = xproto.StackMode.Above
-    self._conn.core.ConfigureWindow(self.wid, xproto.ConfigWindow.StackMode, [mode])
+    self._conn.core.ConfigureWindow(self.wid,
+                                    xproto.ConfigWindow.StackMode,
+                                    [mode])
 
   def focus(self):
     """ Let window receive mouse and keyboard events. """
+    self.wm.cur_desktop.cur_focus = self
     # TODO: '_NET_ACTIVE_WINDOW'
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
                                   self.wid, xproto.Time.CurrentTime)
-    self.wm.cur_desktop.cur_focus = self
     return self
 
   def kill(self):
@@ -213,13 +215,16 @@ class Window:
     return self
 
   def resize(self, x=None, y=None, dx=0, dy=0):
+    assert not ((x and y) and (dx or dy)), "wrong arguments"
     if x and y:
       width = x
       height = y
-    if dx and dy:
+    elif dx or dy:
       x, y, width, height = self.geometry
       width += dx
       height += dy
+    else:
+      raise Exception("wrong arguments for resize")
 
     mask = xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
     value = [width, height]
@@ -261,10 +266,6 @@ class Window:
     print("TODO WARPING DOES NOT WORK :(")
     self._conn.core.WarpPointer(0, self.wid, 0,0,0,0, 10, 10)
     return self
-
-  def grab_key(self, modifiers, key):
-    """ Don't know why one would do window-specific hotkeys, but here it is! """
-    self.wm.grab_key(modifiers, key, window=self)
 
   def set_attr(self, **kwargs):
       mask, values = AttributeMasks(**kwargs)
@@ -343,8 +344,7 @@ class Keyboard:
 class WM:
   """
       Provides basic building blocks to make a window manager.
-      It hides all the dirty implementation details of XCB.
-      Other classes should use its methods to interface with X.
+      It hides many dirty details about XCB.
   """
   root  = None
   atoms = None
@@ -393,7 +393,7 @@ class WM:
     self.ignoreEvents = set([
         # "KeyRelease",
         "ReparentNotify",
-        "CreateNotify",
+        # "CreateNotify",
         # DWM handles this to help "broken focusing windows".
         "MapNotify",
         "ConfigureNotify",
@@ -405,7 +405,7 @@ class WM:
     # KEYBOARD
     self.kbd = Keyboard(xcb_setup, self._conn)
 
-    # FLUSH PENDING STUFF
+    # FLUSH XCB BUFFER
     self.xsync()    # apply settings
     self._xpoll()   # the event loop is not yet there, but we might have some pending events...
     # TODO: self.grabMouse
@@ -449,6 +449,8 @@ class WM:
     self.cur_desktop.windows.append(window)
     self._conn.core.ChangeWindowAttributesChecked(
         wid, CW.EventMask, [EventMask.EnterWindow])
+    print("OOOOOOOOOOOOOOO")
+    self.hook.fire("window_create", window)
 
   def on_window_enter(self, evname, xcb_event):
     wid = xcb_event.event
@@ -542,9 +544,14 @@ class WM:
     # l = [(attr, getattr(xcb_event, attr)) for attr in sorted(dir(xcb_event)) if not attr.startswith('_')]
     # print(evname)
     # print(l)
-    button = xcb_event.detail
     modmask = xcb_event.state & 0xff  # TODO: is the mask correct?
+    if evname == 'MotionNotify':
+      button = 1  # TODO
+    else:
+      button = xcb_event.detail
+
     event = ("on_mouse", modmask, button)
+    # print(event)
     self.hook.fire(event, evname, xcb_event)
 
   def on_configure_window(self, _, event):
@@ -724,17 +731,29 @@ if __name__ == '__main__':
   def on_mouse(evhandler, evtype, xcb_ev):
     global orig_coordinates
     global orig_geometry
+    cur_pos = xcb_ev.root_x, xcb_ev.root_y
+    window = wm.cur_desktop.cur_focus
     if evtype == "ButtonPress":
-      orig_coordinates = xcb_ev.root_x, xcb_ev.root_y
-      orig_geometry = wm.cur_desktop.cur_focus.geometry
+      orig_coordinates = cur_pos
+      orig_geometry = window.geometry
       print(orig_coordinates, orig_geometry)
     elif evtype ==  "ButtonRelease":
       orig_coordinates = None
       orig_geometry = None
-      print("RELEASE")
     elif evtype ==  "MotionNotify":
-      print("SOMETHING IS MOVING....")
+      dx = cur_pos[0] - orig_coordinates[0]
+      dy = cur_pos[1] - orig_coordinates[1]
+      x = orig_geometry[0] + dx
+      y = orig_geometry[1] + dy
+      if x<1 or y < 1:
+        orig_coordinates = cur_pos[0], cur_pos[1]
+        orig_geometry = window.geometry
+      else:
+        window.move(x=x, y=y)
 
+  # @wm.hook("window_create")
+  # def window_create(event, window):
+  #   print("new window", window)
 
   @wm.hook("window_enter")
   def switch_focus(event, window):
@@ -790,13 +809,15 @@ if __name__ == '__main__':
   @wm.hook(wm.grab_key([ctrl], 'n'))
   def prev_window(event):
     desktop = wm.cur_desktop
+    windows = desktop.windows
     cur = desktop.cur_focus
-    cur_idx = desktop.windows.index(cur)
-    nxt = desktop.windows[cur_idx+1]
+    cur_idx = windows.index(cur)
+    tot = len(windows)
+    nxt = desktop.windows[(cur_idx+1)%tot]
     switch_focus("some_fake_ev", nxt)
 
   # OTHER
-  @wm.hook(wm.grab_key([alt], 'x'))
+  @wm.hook(wm.grab_key([ctrl], 'x'))
   def spawn_console(event):
     subprocess.Popen("urxvt")
 
@@ -804,8 +825,15 @@ if __name__ == '__main__':
   def maximize(event):
     wm.cur_desktop.cur_focus.toggle_maximize()
 
+  @wm.hook(wm.grab_key([ctrl], 's'))
+  def status(event):
+    from useful.mstring import prints
+    print(wm.windows)
+    root = wm.root
+    focus = wm.cur_desktop.cur_focus
+    prints("root: {root}, focus: {focus}, {focus.geometry}")
+
   # subprocess.Popen("xcalc")
   # subprocess.Popen("xterm")
   subprocess.Popen("urxvt")
   wm.loop()
-  print("BYE!")
