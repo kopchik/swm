@@ -313,7 +313,6 @@ class Window:
           self.wid, mask, values
       )
 
-
   def get_prop(self, prop, typ=None, unpack=None):
       """
           Return the contents of a property as a GetPropertyReply. If unpack
@@ -347,7 +346,6 @@ class Window:
           return r.value.to_string()
       else:
         return r
-
 
   # TODO: move this code to WM
   def set_prop(self, name, value, type=None, format=None):
@@ -738,6 +736,8 @@ class WM:
 
   def stop(self):
     """ It does what it says. """
+    self.hook.fire("on_exit")
+    self.xsync()
     print('Stopping eventloop')
     self._eventloop.stop()
 
@@ -998,8 +998,21 @@ if __name__ == '__main__':
       window = wm.windows[wid]
       prints("{wid:<10} {window.name:<20} {window.mapped:<10}")
 
+  # restore windows, otherwise will stay invisible
+  @wm.hook(wm.grab_key([ctrl], 'q'))
+  def quit(event):
+    print("STOOP")
+    wm.stop()
+
+  @wm.hook("on_exit")
+  def on_exit(*args, **kwargs):
+    for window in wm.windows.values():
+      window.show()
+  # TODO: handle reload
+
   run("urxvt")
   run("xsetroot -solid Teal")
-  wm.loop()
 
-  # TODO: exit, handle unmap and reload
+  # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
+  # because wm.loop is blocking.
+  wm.loop()
