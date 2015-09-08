@@ -16,9 +16,10 @@ import operator
 import asyncio
 import traceback
 import signal
+import shlex
+import sys
 import os
 
-from xcffib import xproto
 from xcffib.xproto import WindowError, AccessError, DrawableError
 from xcffib.xproto import CW, WindowClass, EventMask, ConfigWindow
 from xcffib import xproto
@@ -29,6 +30,13 @@ import xcffib
 from defs import XCB_CONN_ERRORS, WINDOW_TYPES, PROPERTYMAP, SUPPORTED_ATOMS, ModMasks
 from xkeysyms import keysyms
 
+from useful.mstring import s, prints
+from useful.log import Log
+
+def run(cmd):
+  if isinstance(cmd, str):
+    cmd = shlex.split(cmd)
+  subprocess.Popen(cmd)
 
 # TODO: have no idea what is this class about.
 class MaskMap:
@@ -103,7 +111,6 @@ class AtomCache:
 
 AttributeMasks = MaskMap(CW)
 
-
 def get_modmask(modifiers):
     """
     Translate a modifier mask specified as a list of strings into an or-ed
@@ -131,7 +138,6 @@ class Xrandr:
       info = self._conn.GetCrtcInfo(i, xcffib.CurrentTime).reply()
       self.screens.append(info)
     self.screen = self.screens[0]
-
 
     # reply = xcffib.randr.randrExtension.GetScreenResourcesCurrent(root).reply()
     # reply = xcffib.randr.`(runtime.viewport.root).reply()
@@ -174,6 +180,7 @@ class Window:
   def __init__(self, wm, wid, mapped=True, name=None):
     assert isinstance(wid, int), "wid must be int"
     assert isinstance(wm, WM),  "wid must be an instance of WM"
+    self.log = Log("Window %s" % wid)
     self.wid = wid
     self.wm = wm
     self._conn = self.wm._conn
@@ -186,10 +193,13 @@ class Window:
 
 
   def show(self):
-    self._conn.core.MapWindow(self.wid).reply()  # TODO: is sync needed?
+    self.log.show.debug("showing")
+    self._conn.core.MapWindow(self.wid)  # TODO: is sync needed?
+    # TODO: self.mapped = 1?
 
   def hide(self):
-    self.wm.hide_window(self)
+    self._conn.core.UnmapWindow(self.wid)
+    # TODO: self.mapped = 0?
 
   def rise(self):
     """ Put window on top of others. TODO: what about focus? """
@@ -199,7 +209,9 @@ class Window:
                                     [mode])
 
   def focus(self):
-    """ Let window receive mouse and keyboard events. """
+    """ Let window receive mouse and keyboard events.
+        X expects window to be mapped.
+    """
     self.wm.cur_desktop.cur_focus = self
     # TODO: self.wm.root.set_property("_NET_ACTIVE_WINDOW", self.wid)
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
@@ -414,12 +426,18 @@ class WM:
   atoms = None
 
   def __init__(self, display=None, desktops=None):
+    self.log = Log("WM")
     # INIT SOME BASIC STUFF
     self.hook = Hook()
     self.windows = {}
     if not display:
       display = os.environ.get("DISPLAY")
-    self._conn = xcffib.connect(display=display)
+
+    try:
+      self._conn = xcffib.connect(display=display)
+    except xcffib.ConnectionException:
+      sys.exit("cannot connect to %s" % display)
+
     self.atoms = AtomCache(self._conn)
     self.desktops = desktops or [Desktop()]
     self.cur_desktop = self.desktops[0]
@@ -461,7 +479,7 @@ class WM:
         "ReparentNotify",
         # "CreateNotify",
         # DWM handles this to help "broken focusing windows".
-        "MapNotify",
+        # "MapNotify",
         "ConfigureNotify",
         "LeaveNotify",
         "FocusOut",
@@ -490,17 +508,18 @@ class WM:
     self._eventloop.add_signal_handler(signal.SIGINT, self.stop)
     self._eventloop.add_signal_handler(signal.SIGTERM, self.stop)
     self._eventloop.set_exception_handler(
-        lambda x, y: print("Got an exception in poll loop")  # TODO: more details
+        lambda loop, ctx: self.log.error(s("Got an exception in {loop}: {ctx}"))
     )
     fd = self._conn.get_file_descriptor()
     self._eventloop.add_reader(fd, self._xpoll)
 
     # HANDLE STANDARD EVENTS
     self.hook.register("MapRequest", self.on_map_request)
+    self.hook.register("MapNotify", self.on_map_notify)
+    self.hook.register("UnmapNotify", self.on_window_unmap)
     self.hook.register("KeyPress",   self.on_key_press)
     # self.hook.register("KeyRelease", self.on_key_release)
     # self.hook.register("CreateNotify", self.on_window_create)
-    self.hook.register("UnmapNotify", self.on_window_unmap)
     self.hook.register("DestroyNotify", self.on_window_destroy)
     self.hook.register("EnterNotify", self.on_window_enter)
     self.hook.register("ConfigureRequest", self.on_configure_window)
@@ -523,19 +542,25 @@ class WM:
   def on_map_request(self, evname, xcb_event):
     """ Map request is a request to draw the window on screen. """
     wid = xcb_event.window
-    print("MAP", wid)
     if wid not in self.windows:
       window = Window(self, wid, mapped=True)
+      self.log.CreateNotify.debug("new window for ready for mapping: %s" % window)
       self.windows[wid] = window
       self.cur_desktop.windows.append(window)
     else:
       window = self.windows[wid]
+      self.log.CreateNotify.debug("map request for %s" % window)
     window.show()
     window.focus()
 
+  def on_map_notify(self, evname, xcb_event):
+    wid = xcb_event.window
+    window = self.windows[wid]
+    window.mapped = True
+    self.log.on_map_notify.debug("map notify for %s" % window)
+
   def on_window_unmap(self, evname, xcb_event):
     wid = xcb_event.window
-    window = Window(self, wid)
     window = self.windows[wid]
     window.mapped = False
     self.hook.fire("window_unmap", window)
@@ -549,6 +574,7 @@ class WM:
         print("%s removed from %s" %(self, desktop))
       except ValueError:
         pass
+    del self.windows[wid]
 
   def on_window_enter(self, evname, xcb_event):
     wid = xcb_event.event
@@ -681,18 +707,17 @@ class WM:
   def scan(self):
     """ Get all windows in the system. """
     q = self._conn.core.QueryTree(self.root.wid).reply()
-    print(q, type(q))
     for wid in q.children:
       attrs = self._conn.core.GetWindowAttributes(wid).reply()
       print(attrs, type(attrs))
       if attrs.map_state == xproto.MapState.Unmapped:
-        print("window is not mapped", wid)
+        self.log.scan.debug("window %s is not mapped, skipping" % wid)
         continue
       if wid not in self.windows:
         window = Window(wid=wid, wm=self, mapped=True)
         self.windows[wid] = window
         self.cur_desktop.windows.append(window)
-    print("WINDOWS:", sorted(self.windows.values()))
+    self.log.scan.info("the following windows are active: %s" % sorted(self.windows.values()))
 
 
   def finalize(self):
@@ -735,31 +760,23 @@ class WM:
           if evname.endswith("Event"):
               evname = evname[:-5]
           if evname in self.ignoreEvents:
-            # print("ignoring", xcb_event)
+            self.log._xpoll.debug("ignoring %s" % xcb_event)
             continue
+          self.log._xpoll.debug("got %s" % evname)
           self.hook.fire(evname, xcb_event)
-      # *Original description:
-      # Catch some bad X exceptions. Since X is event based, race
-      # conditions can occur almost anywhere in the code. For
-      # example, if a window is created and then immediately
-      # destroyed (before the event handler is evoked), when the
-      # event handler tries to examine the window properties, it
-      # will throw a WindowError exception. We can essentially
-      # ignore it, since the window is already dead and we've got
-      # another event in the queue notifying us to clean it up.
-      # *My description*:
-      # Ok, kids, today I'll teach you how to write reliable interprise
+      # OK, kids, today I'll teach you how to write reliable enterprise
       # software! You just catch all the exceptions in the top-level loop
       # and ignore them. No, I'm kidding, these exceptions are no use
       # for us because we don't care if a window cannot be drawn or something.
       # We actually only need to handle just a few events and ignore the rest.
+      # Exceptions happen because of the async nature of X.
       except (WindowError, AccessError, DrawableError):
-          pass
+          self.log.debug("(minor exception)")
       except Exception as e:
           error_code = self._conn.has_error()
           if error_code:
               error_string = XCB_CONN_ERRORS[error_code]
-              print("Shutting down due to X connection error %s (%s)" %
+              self.log.critical("Shutting down due to X connection error %s (%s)" %
                   (error_string, error_code))
               self.stop()
               break
@@ -776,6 +793,7 @@ class Hook:
   """ Simple callback dispatcher. """
   def __init__(self):
     self.cb_map = defaultdict(list)
+    self.log = Log("hook")
 
   def decor(self, event):
     def wrap(cb):
@@ -792,7 +810,7 @@ class Hook:
 
   def fire(self, event, *args, **kwargs):
     if event not in self.cb_map:
-       print("no handler for", event)
+       self.log.notice("no handler for %s" % event)
        return
 
     handlers = self.cb_map[event]
@@ -804,7 +822,7 @@ class Hook:
       except Exception as err:
         msg="error on event {ev}: {err} ({typ}) (in {hdl})" \
                 .format(err=err, typ=type(err), ev=event, hdl=handler)
-        print(msg)
+        self.log.error(msg)
 
 
 if __name__ == '__main__':
@@ -819,6 +837,7 @@ if __name__ == '__main__':
   MouseC = 2
   MouseR = 3
   wm = WM()
+  log = Log("USER HOOKS")
 
   orig_coordinates = None
   orig_geometry = None
@@ -831,7 +850,7 @@ if __name__ == '__main__':
     if evtype == "ButtonPress":
       orig_coordinates = cur_pos
       orig_geometry = window.geometry
-      print(orig_coordinates, orig_geometry)
+      prints("orig_coord: {orig_coordinates}, orig_geom: {orig_geometry}")
     elif evtype ==  "ButtonRelease":
       orig_coordinates = None
       orig_geometry = None
@@ -840,12 +859,16 @@ if __name__ == '__main__':
       dy = cur_pos[1] - orig_coordinates[1]
       x = orig_geometry[0] + dx
       y = orig_geometry[1] + dy
-      if x<0 or y < 0:
-        orig_coordinates = cur_pos
-        orig_geometry = window.geometry
-      else:
-        window.move(x=x, y=y)
+      if x < 0 or y < 0:
+        x = max(0, x)
+        y = max(0, y)
+      # if x < 0 or y < 0:
+        # orig_coordinates = cur_pos
+        # orig_geometry = window.geometry
+      window.move(x=x, y=y)
 
+  # There are a lot of windows created and most of them not supposed
+  # to be managed by WM. Thus, this hook is pretty much useless
   # @wm.hook("window_create")
   # def window_create(event, window):
   #   print("new window", window)
@@ -855,6 +878,7 @@ if __name__ == '__main__':
     # do not switch focus when moving over root window
     if window == wm.root:
       return
+    window.show()
     window.focus()
     window.rise()
 
@@ -941,14 +965,24 @@ if __name__ == '__main__':
     nxt = desktop.windows[(cur_idx+1)%tot]
     switch_focus("some_fake_ev", nxt)
 
+  # DESKTOP
+  @wm.hook(wm.grab_key([ctrl], 'h'))
+  def hide_window(event):
+    desktop = wm.cur_desktop
+    windows = desktop.windows
+    cur = desktop.cur_focus
+    cur_idx = windows.index(cur)
+    cur.hide()
+    # TODO: switch to next window?
+
   # SPAWN
   @wm.hook(wm.grab_key([ctrl], 'x'))
   def spawn_console(event):
-    subprocess.Popen("urxvt")
+    run("urxvt")
 
   @wm.hook(wm.grab_key([alt], 'd'))
-  def spawn_console(event):
-    subprocess.Popen("dmenu_run")
+  def spawn_dmenu(event):
+    run("dmenu_run")
 
   # OTHER
   @wm.hook(wm.grab_key([ctrl], 'w'))
@@ -958,15 +992,14 @@ if __name__ == '__main__':
   @wm.hook(wm.grab_key([ctrl], 's'))
   def status(event):
     from useful.mstring import prints
-    print(list(wm.windows.values()))
-    root = wm.root
     focus = wm.cur_desktop.cur_focus
-    prints("root: {root}, focus: {focus}, {focus.geometry}")
-    print(root.geometry)
+    prints("root: {root}, focus: {focus}")
+    for wid in sorted(wm.windows):
+      window = wm.windows[wid]
+      prints("{wid:<10} {window.name:<20} {window.mapped:<10}")
 
-  # subprocess.Popen("xcalc")
-  # subprocess.Popen("xterm")
-  subprocess.Popen("urxvt")
+  run("urxvt")
+  run("xsetroot -solid Teal")
   wm.loop()
 
   # TODO: exit, handle unmap and reload
