@@ -72,6 +72,7 @@ class MaskMap:
             raise ValueError("Unknown mask names: %s" % list(kwargs.keys()))
         return mask, values
 
+AttributeMasks = MaskMap(CW)
 
 # TODO: stolen from qtile. Probably, we want to re-factor it.
 class AtomCache:
@@ -109,23 +110,13 @@ class AtomCache:
             self.insert(name=key)
         return self.atoms[key]
 
-AttributeMasks = MaskMap(CW)
 
 def get_modmask(modifiers):
-    """
-    Translate a modifier mask specified as a list of strings into an or-ed
-    bit representation.
-    """
-    masks = []
-    for i in modifiers:
-        try:
-            masks.append(ModMasks[i])
-        except KeyError:
-            raise KeyError("Unknown modifier: %s" % i)
-    if masks:
-        return reduce(operator.or_, masks)
-    else:
-        return 0
+  result = 0
+  for m in modifiers:
+    assert m in ModMasks, "unknown modifier %s" % m
+    result |= ModMasks[m]
+  return result
 
 
 class Xrandr:
@@ -195,11 +186,11 @@ class Window:
   def show(self):
     self.log.show.debug("showing")
     self._conn.core.MapWindow(self.wid)  # TODO: is sync needed?
-    # TODO: self.mapped = 1?
+    self.mapped = False
 
   def hide(self):
     self._conn.core.UnmapWindow(self.wid)
-    # TODO: self.mapped = 0?
+    self.mapped = False
 
   def rise(self):
     """ Put window on top of others. TODO: what about focus? """
@@ -212,6 +203,8 @@ class Window:
     """ Let window receive mouse and keyboard events.
         X expects window to be mapped.
     """
+    if not self.mapped:
+      self.show()
     self.wm.cur_desktop.cur_focus = self
     # TODO: self.wm.root.set_property("_NET_ACTIVE_WINDOW", self.wid)
     self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
@@ -246,6 +239,7 @@ class Window:
     width = max(5, width)
     height = max(5, height)
     self.set_geometry(width=width, height=height)
+    return self
 
   def toggle_maximize(self):
     if self.prev_geometry:
@@ -294,12 +288,13 @@ class Window:
     return "(no name)"
 
   def warp(self):
-    print("TODO WARPING DOES NOT WORK :(")
+    """ Does not work under Xephyr :( """
+    x,y, width, height = self.geometry
     self._conn.core.WarpPointer(
-      0, self.wid,  # src_window, dst_window
-      0, 0,         # src_x, src_y
-      0, 0,         # src_width, src_height
-      0, 0          # dest_x, dest_y
+      0, self.wid,                    # src_window, dst_window
+      0, 0,                           # src_x, src_y
+      0, 0,                           # src_width, src_height
+      width // 2, height // 2         # dest_x, dest_y
     )
     self.wm.xsync()
     return self
@@ -418,9 +413,11 @@ class Keyboard:
 class WM:
   """
       Provides basic building blocks to make a window manager.
-      It hides many dirty details about XCB.
+      It hides many dirty details about XCB. It was intended
+      to provide minimum functionality, the rest supposed to
+      be implemented by user in configuration file.
   """
-  root  = None
+  root  = None  # root window
   atoms = None
 
   def __init__(self, display=None, desktops=None):
@@ -524,18 +521,6 @@ class WM:
     self.hook.register("MotionNotify", self.on_mouse_event)
     self.hook.register("ButtonPress", self.on_mouse_event)
     self.hook.register("ButtonRelease", self.on_mouse_event)
-    # TODO: DestroyNotify
-
-  def on_window_create(self, evname=None, xcb_event=None, wid=None):
-    # TODO: do this in hook?
-    if not wid:
-      wid = xcb_event.window
-    window = Window(self, wid)
-    self.windows[wid] = window
-    self.cur_desktop.windows.append(window)
-    self._conn.core.ChangeWindowAttributesChecked(
-        wid, CW.EventMask, [EventMask.EnterWindow])
-    self.hook.fire("window_create", window)
 
   def on_map_request(self, evname, xcb_event):
     """ Map request is a request to draw the window on screen. """
@@ -559,12 +544,16 @@ class WM:
 
   def on_window_unmap(self, evname, xcb_event):
     wid = xcb_event.window
+    if wid not in self.windows:
+      return
     window = self.windows[wid]
     window.mapped = False
     self.hook.fire("window_unmap", window)
 
   def on_window_destroy(self, evname, xcb_event):
     wid = xcb_event.window
+    if wid not in self.windows:
+      return
     window = self.windows[wid]
     for desktop in self.desktops:
       try:
@@ -738,8 +727,13 @@ class WM:
     """ It does what it says. """
     self.hook.fire("on_exit")
     self.xsync()
-    print('Stopping eventloop')
+    self.log.stop.debug("stopping event loop")
     self._eventloop.stop()
+
+  def restart(self):
+    self.stop()
+    import os
+    os.execv("swm.py", ["swm.py"])
 
   def loop(self):
     """ DITTO """
@@ -839,9 +833,11 @@ if __name__ == '__main__':
   wm = WM()
   log = Log("USER HOOKS")
 
+  mod = win
+
   orig_coordinates = None
   orig_geometry = None
-  @wm.hook(wm.grab_mouse([ctrl], MouseL))
+  @wm.hook(wm.grab_mouse([alt], MouseL))
   def on_mouse(evhandler, evtype, xcb_ev):
     global orig_coordinates
     global orig_geometry
@@ -881,6 +877,8 @@ if __name__ == '__main__':
     window.show()
     window.focus()
     window.rise()
+    wm.cur_desktop.cur_focus = window
+    window.warp()
 
   def get_edges(windows):
     horiz, vert = [], []
@@ -888,6 +886,9 @@ if __name__ == '__main__':
       if not window.mapped:
         continue
       x,y, width, height = window.geometry
+      if window.name == 'root':
+        width += 1
+        height += 1
       horiz.append(x)
       horiz.append(x+width)
       vert.append(y)
@@ -896,7 +897,7 @@ if __name__ == '__main__':
 
   # RESIZE
   step = 100
-  @wm.hook(wm.grab_key([ctrl, shift], right))
+  @wm.hook(wm.grab_key([mod, shift], right))
   def expand_width(event):
     windows = wm.cur_desktop.windows
     window = wm.cur_desktop.cur_focus
@@ -911,51 +912,53 @@ if __name__ == '__main__':
         wm.cur_desktop.cur_focus.set_geometry(width=edge-x-2)
         break
     else:
-      wm.cur_desktop.cur_focus.resize(dx=step)
+      wm.cur_desktop.cur_focus.resize(dx=step).warp()
 
-  @wm.hook(wm.grab_key([ctrl, shift], left))
+  @wm.hook(wm.grab_key([mod, shift], left))
   def shrink_width(event):
-    wm.cur_desktop.cur_focus.resize(dx=-step)
+    wm.cur_desktop.cur_focus.resize(dx=-step).warp()
 
-  @wm.hook(wm.grab_key([ctrl, shift], up))
+  @wm.hook(wm.grab_key([mod, shift], up))
   def expand_height(event):
-    wm.cur_desktop.cur_focus.resize(dy=-step)
+    wm.cur_desktop.cur_focus.resize(dy=-step).warp()
 
-  @wm.hook(wm.grab_key([ctrl, shift], down))
+  @wm.hook(wm.grab_key([mod, shift], down))
   def shrink_height(event):
-    wm.cur_desktop.cur_focus.resize(dy=step)
+    wm.cur_desktop.cur_focus.resize(dy=step).warp()
 
-  @wm.hook(wm.grab_key([ctrl], 'm'))
+  @wm.hook(wm.grab_key([mod], 'm'))
   def maximize(event):
     wm.cur_desktop.cur_focus.toggle_maximize()
 
   # MOVE
-  @wm.hook(wm.grab_key([ctrl], right))
+  @wm.hook(wm.grab_key([mod], right))
   def move_right(event):
     wm.cur_desktop.cur_focus.move(dx=step).warp()
 
-  @wm.hook(wm.grab_key([ctrl], left))
+  @wm.hook(wm.grab_key([mod], left))
   def move_left(event):
     wm.cur_desktop.cur_focus.move(dx=-step).warp()
 
-  @wm.hook(wm.grab_key([ctrl], up))
+  @wm.hook(wm.grab_key([mod], up))
   def move_up(event):
     wm.cur_desktop.cur_focus.move(dy=-step).warp()
 
-  @wm.hook(wm.grab_key([ctrl], down))
+  @wm.hook(wm.grab_key([mod], down))
   def move_down(event):
     wm.cur_desktop.cur_focus.move(dy=step).warp()
 
   # FOCUS
-  @wm.hook(wm.grab_key([ctrl], 'p'))
+  @wm.hook(wm.grab_key([alt], 'Tab'))
   def next_window(event):
     desktop = wm.cur_desktop
     cur = desktop.cur_focus
     cur_idx = desktop.windows.index(cur)
     nxt = desktop.windows[cur_idx-1]
+    if nxt == wm.root:  # TODO: dirty hack because switch_focus does not switch to root
+      nxt = desktop.windows[cur_idx-2]
     switch_focus("some_fake_ev", nxt)
 
-  @wm.hook(wm.grab_key([ctrl], 'n'))
+  @wm.hook(wm.grab_key([mod], 'n'))
   def prev_window(event):
     desktop = wm.cur_desktop
     windows = desktop.windows
@@ -966,7 +969,7 @@ if __name__ == '__main__':
     switch_focus("some_fake_ev", nxt)
 
   # DESKTOP
-  @wm.hook(wm.grab_key([ctrl], 'h'))
+  @wm.hook(wm.grab_key([mod], 'h'))
   def hide_window(event):
     desktop = wm.cur_desktop
     windows = desktop.windows
@@ -976,20 +979,20 @@ if __name__ == '__main__':
     # TODO: switch to next window?
 
   # SPAWN
-  @wm.hook(wm.grab_key([ctrl], 'x'))
+  @wm.hook(wm.grab_key([mod], 'x'))
   def spawn_console(event):
     run("urxvt")
 
-  @wm.hook(wm.grab_key([alt], 'd'))
+  @wm.hook(wm.grab_key([mod], 'd'))
   def spawn_dmenu(event):
     run("dmenu_run")
 
   # OTHER
-  @wm.hook(wm.grab_key([ctrl], 'w'))
+  @wm.hook(wm.grab_key([mod], 'w'))
   def maximize(event):
     wm.cur_desktop.cur_focus.kill()
 
-  @wm.hook(wm.grab_key([ctrl], 's'))
+  @wm.hook(wm.grab_key([mod], 's'))
   def status(event):
     from useful.mstring import prints
     focus = wm.cur_desktop.cur_focus
@@ -998,19 +1001,22 @@ if __name__ == '__main__':
       window = wm.windows[wid]
       prints("{wid:<10} {window.name:<20} {window.mapped:<10}")
 
-  # restore windows, otherwise will stay invisible
-  @wm.hook(wm.grab_key([ctrl], 'q'))
+  # restore windows, otherwise they will stay invisible
+  @wm.hook(wm.grab_key([mod, shift], 'q'))
   def quit(event):
-    print("STOOP")
     wm.stop()
+
+  @wm.hook(wm.grab_key([mod, shift], 'r'))
+  def restart(event):
+    wm.restart()
 
   @wm.hook("on_exit")
   def on_exit(*args, **kwargs):
+    # restore windows, otherwise they will stay invisible
     for window in wm.windows.values():
       window.show()
-  # TODO: handle reload
 
-  run("urxvt")
+  # run("urxvt")
   run("xsetroot -solid Teal")
 
   # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
