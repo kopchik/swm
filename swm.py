@@ -36,7 +36,15 @@ from useful.log import Log
 def run(cmd):
   if isinstance(cmd, str):
     cmd = shlex.split(cmd)
-  subprocess.Popen(cmd)
+  # os.setpgrp supressses signal forwarding to children  # TODO: test this
+  return subprocess.Popen(cmd, preexec_fn=os.setpgrp)
+
+def run_(cmd):
+  try:
+    return run(cmd)
+  except Exception as err:
+    print("failed to exec %s: %s" %(cmd, err))
+
 
 # TODO: have no idea what is this class about.
 class MaskMap:
@@ -82,12 +90,12 @@ class AtomCache:
         self.reverse = {}
 
         # We can change the pre-loads not to wait for a return
-        for name in WINDOW_TYPES.keys():
-            self.insert(name=name)
+        # for name in WINDOW_TYPES.keys():
+        #     self.insert(name=name)
 
-        for i in dir(xproto.Atom):
-            if not i.startswith("_"):
-                self.insert(name=i, atom=getattr(xproto.Atom, i))
+        # for i in dir(xproto.Atom):
+        #     if not i.startswith("_"):
+        #         self.insert(name=i, atom=getattr(xproto.Atom, i))
 
     def insert(self, name=None, atom=None):
         assert name or atom
@@ -186,7 +194,7 @@ class Window:
   def show(self):
     self.log.show.debug("showing")
     self._conn.core.MapWindow(self.wid)  # TODO: is sync needed?
-    self.mapped = False
+    self.mapped = True
 
   def hide(self):
     self._conn.core.UnmapWindow(self.wid)
@@ -256,7 +264,7 @@ class Window:
     geom = self._conn.core.GetGeometry(self.wid).reply()
     return [geom.x, geom.y, geom.width, geom.height]
 
-  def set_geometry(self, x=None,y=None, width=None, height=None):
+  def set_geometry(self, x=None, y=None, width=None, height=None):
     mask = 0
     values = []
     if x is not None:
@@ -503,7 +511,7 @@ class WM:
     self._eventloop.add_signal_handler(signal.SIGINT, self.stop)
     self._eventloop.add_signal_handler(signal.SIGTERM, self.stop)
     self._eventloop.set_exception_handler(
-        lambda loop, ctx: self.log.error(s("Got an exception in {loop}: {ctx}"))
+        lambda loop, ctx: self.log.error("Got an exception in {}: {}".format(loop, ctx))
     )
     fd = self._conn.get_file_descriptor()
     self._eventloop.add_reader(fd, self._xpoll)
@@ -538,6 +546,9 @@ class WM:
 
   def on_map_notify(self, evname, xcb_event):
     wid = xcb_event.window
+    if wid not in self.windows:
+      # window is managed by the application, not by us
+      return
     window = self.windows[wid]
     window.mapped = True
     self.log.on_map_notify.debug("map notify for %s" % window)
@@ -655,7 +666,7 @@ class WM:
     self.hook.fire(event, evname, xcb_event)
 
   def on_configure_window(self, _, event):
-      # TODO: code from fpwm
+      # This code is so trivial that I just took it from fpwm as is :)
       values = []
       if event.value_mask & ConfigWindow.X:
           values.append(event.x)
@@ -674,7 +685,7 @@ class WM:
       self._conn.core.ConfigureWindow(event.window, event.value_mask, values)
 
   def create_window(self, x, y, width, height):
-    """ Create a window. Right now only used for initialisation, see __init__. """
+    """ Create a window. Right now only used for initialization, see __init__. """
     wid = self._conn.generate_id()
     self._conn.core.CreateWindow(
         self.xcb_default_screen.root_depth,
@@ -696,7 +707,7 @@ class WM:
     q = self._conn.core.QueryTree(self.root.wid).reply()
     for wid in q.children:
       attrs = self._conn.core.GetWindowAttributes(wid).reply()
-      print(attrs, type(attrs))
+      # print(attrs, type(attrs))
       if attrs.map_state == xproto.MapState.Unmapped:
         self.log.scan.debug("window %s is not mapped, skipping" % wid)
         continue
@@ -775,12 +786,11 @@ class WM:
               self.stop()
               break
           traceback.print_exc()
-          # print("Got an exception in poll loop: %s (%s)" %  (e, type(e)))
     self.flush()  # xcb often doesn't flush implicitly
 
 
-class SupressEvent(Exception):
-  """ Raise this one in callback if further callbacks shouldn't be called. """
+# class SupressEvent(Exception):
+#   """ Raise this one in callback if further callbacks shouldn't be called. """
 
 
 class Hook:
@@ -833,7 +843,7 @@ if __name__ == '__main__':
   wm = WM()
   log = Log("USER HOOKS")
 
-  mod = win
+  mod = ctrl
 
   orig_coordinates = None
   orig_geometry = None
@@ -880,51 +890,65 @@ if __name__ == '__main__':
     wm.cur_desktop.cur_focus = window
     window.warp()
 
-  def get_edges(windows):
-    horiz, vert = [], []
+  def get_edges(windows, vert=False):
+    vstart, vstop, hstart, hstop = [], [], [], []
     for window in windows:
       if not window.mapped:
         continue
-      x,y, width, height = window.geometry
-      if window.name == 'root':
-        width += 1
-        height += 1
-      horiz.append(x)
-      horiz.append(x+width)
-      vert.append(y)
-      vert.append(y+width)
-    return horiz, vert
+      x,y,w,h = window.geometry
+      vstart.append(x)
+      vstop.append(x+w)
+      hstart.append(y)
+      hstop.append(y+h)
+    return vstart, vstop, hstart, hstop
+
+  def snap_to(cur, step, edges):
+    edges = sorted(edges)
+    for edge in edges:
+      if min(cur, cur+step) < edge < max(cur, cur+step):
+        return edge
+    return cur + step
+
+  # TODO: rename cur_focus to focus, cur_desktop to desktop
+  def smart_snap(attr, step):
+    windows = wm.cur_desktop.windows
+    window = wm.cur_desktop.cur_focus
+    x,y,w,h = window.geometry
+    vstart, vstop, hstart, hstop = get_edges(w for w in windows if w != window and w.mapped)
+    if attr == 'width':
+      cur = x+w
+      snap = snap_to(cur, step, vstart+vstop)
+      window.set_geometry(**{attr:(snap - x)})
+    elif attr == 'height':
+      cur = y+h
+      snap = snap_to(cur, step, hstart+hstop)
+      window.set_geometry(**{attr:(snap - y)})
+    elif attr == 'x':
+      cur = x
+      snap = snap_to(cur, step, vstart+vstop)
+      window.set_geometry(x=snap)
+    window.warp()
+
 
   # RESIZE
   step = 100
   @wm.hook(wm.grab_key([mod, shift], right))
   def expand_width(event):
-    windows = wm.cur_desktop.windows
-    window = wm.cur_desktop.cur_focus
-    x,y,w,h = window.geometry
-    cur_edge = x + w
-
-    edges,_ = get_edges(windows)
-    edges.sort()
-    print(edges)
-    for edge in edges:
-      if cur_edge+2 < edge < cur_edge+step:
-        wm.cur_desktop.cur_focus.set_geometry(width=edge-x-2)
-        break
-    else:
-      wm.cur_desktop.cur_focus.resize(dx=step).warp()
+    smart_snap('width', step)
 
   @wm.hook(wm.grab_key([mod, shift], left))
   def shrink_width(event):
-    wm.cur_desktop.cur_focus.resize(dx=-step).warp()
+    smart_snap('width', -step)
 
   @wm.hook(wm.grab_key([mod, shift], up))
   def expand_height(event):
-    wm.cur_desktop.cur_focus.resize(dy=-step).warp()
+    # wm.cur_desktop.cur_focus.resize(dy=-step).warp()
+    smart_snap('height', -step)
 
   @wm.hook(wm.grab_key([mod, shift], down))
   def shrink_height(event):
-    wm.cur_desktop.cur_focus.resize(dy=step).warp()
+    # wm.cur_desktop.cur_focus.resize(dy=step).warp()
+    smart_snap('height', step)
 
   @wm.hook(wm.grab_key([mod], 'm'))
   def maximize(event):
@@ -933,18 +957,22 @@ if __name__ == '__main__':
   # MOVE
   @wm.hook(wm.grab_key([mod], right))
   def move_right(event):
-    wm.cur_desktop.cur_focus.move(dx=step).warp()
+    # wm.cur_desktop.cur_focus.move(dx=step).warp()
+    smart_snap('x', step)
 
   @wm.hook(wm.grab_key([mod], left))
   def move_left(event):
-    wm.cur_desktop.cur_focus.move(dx=-step).warp()
+    # wm.cur_desktop.cur_focus.move(dx=-step).warp()
+    smart_snap('x', -step)
 
   @wm.hook(wm.grab_key([mod], up))
   def move_up(event):
+    step = 5
     wm.cur_desktop.cur_focus.move(dy=-step).warp()
 
   @wm.hook(wm.grab_key([mod], down))
   def move_down(event):
+    step = 5
     wm.cur_desktop.cur_focus.move(dy=step).warp()
 
   # FOCUS
@@ -1017,7 +1045,7 @@ if __name__ == '__main__':
       window.show()
 
   # run("urxvt")
-  run("xsetroot -solid Teal")
+  run_("xsetroot -solid Teal")
 
   # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
   # because wm.loop is blocking.
