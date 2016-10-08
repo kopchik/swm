@@ -1,0 +1,6 @@
+[Desktop Entry]
+Encoding=UTF-8
+Type=XSession
+Exec=/home/exe/github/swm.py
+TryExec=/home/exe/github/swm.py
+Name=swm
