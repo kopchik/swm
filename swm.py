@@ -6,17 +6,19 @@ Many pieces of code are based on qtile.
 
 Some useful literature to read:
   0. http://xcb.freedesktop.org/windowcontextandmanipulation/
-  1. Extended Window Manager Hints (EWMH) http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
-  2. Inter-Client Communication Conventions Manual (ICCM) http://tronche.com/gui/x/icccm/
+  1. Extended Window Manager Hints (EWMH)
+     http://standards.freedesktop.org/wm-spec/wm-spec-1.3.html
+  2. Inter-Client Communication Conventions Manual (ICCM)
+     http://tronche.com/gui/x/icccm/
 """
 
 from collections import defaultdict
-from functools import reduce
-import operator
+import subprocess
 import asyncio
 import traceback
 import signal
 import shlex
+import time
 import sys
 import os
 
@@ -27,11 +29,14 @@ import xcffib.randr
 import xcffib.xproto
 import xcffib
 
-from defs import XCB_CONN_ERRORS, WINDOW_TYPES, PROPERTYMAP, SUPPORTED_ATOMS, ModMasks
+from defs import XCB_CONN_ERRORS, WINDOW_TYPES, \
+    PROPERTYMAP, SUPPORTED_ATOMS, ModMasks
 from xkeysyms import keysyms
 
-from useful.mstring import s, prints
+from useful.mstring import prints
 from useful.log import Log
+
+DEBUG = True
 
 
 def run(cmd):
@@ -85,9 +90,8 @@ class MaskMap:
 
 AttributeMasks = MaskMap(CW)
 
+
 # TODO: stolen from qtile. Probably, we want to re-factor it.
-
-
 class AtomCache:
 
     def __init__(self, conn):
@@ -150,15 +154,21 @@ class Xrandr:
         # print("XXXXXXXX", reply)
 
 
+# TODO: suppress events
 class Desktop:
-    """ Class for virtual desktops. """
+    """ Support for virtual desktops. """
 
-    def __init__(self, windows=None):
+    def __init__(self, windows=None, name=None):
+        if not name:
+            name = "(desktop %s)" % id(self)
+        self.log = Log("desktop %s" % name)
         if not windows:
             windows = []
         self.windows = windows
+        self.name = name
         self.cur_focus = None
         self.prev_focus = None
+        self.were_mapped = []
 
     def get_prev_focus(self):
         raise NotImplementedError
@@ -167,12 +177,20 @@ class Desktop:
         raise NotImplementedError
 
     def show(self):
-        for window in self.windows:
+        for window in self.were_mapped:
+            self.log.debug("showing window %s" % window)
             window.show()
+        else:
+            self.log.debug("no windows on this desktop to show")
+        self.were_mapped.clear()
 
     def hide(self):
         for window in self.windows:
-            window.hide()
+            if window.mapped:
+                self.log.debug("hiding window %s" % window)
+                window.hide()
+                self.were_mapped.append(window)
+        self.log.debug("followind windows were hidden: %s" % self.were_mapped)
 
     def window_add(self, window):
         if not self.cur_focus:
@@ -183,12 +201,15 @@ class Desktop:
         self.windows.remove(window)
         raise NotImplementedError
 
+    def __repr__(self):
+        return "Desktop(%s)" % self.name
+
 
 class Window:
 
     def __init__(self, wm, wid, mapped=True, name=None):
         assert isinstance(wid, int), "wid must be int"
-        assert isinstance(wm, WM),  "wid must be an instance of WM"
+        assert isinstance(wm, WM), "wid must be an instance of WM"
         self.log = Log("Window %s" % wid)
         self.wid = wid
         self.wm = wm
@@ -438,8 +459,8 @@ class WM:
         to provide minimum functionality, the rest supposed to
         be implemented by user in configuration file.
     """
-    root = None  # root window
-    atoms = None
+    root = None   # type: Window
+    atoms = None  # type: AtomCache
 
     def __init__(self, display=None, desktops=None):
         self.log = Log("WM")
@@ -465,8 +486,8 @@ class WM:
         root_wid = self.xcb_default_screen.root
         self.root = Window(self, root_wid, name="root", mapped=True)
         self.windows[root_wid] = self.root
-        for desktop in self.desktops:
-            desktop.windows.append(self.root)
+#        for desktop in self.desktops:
+#            desktop.windows.append(self.root)
 
         self.root.set_attr(
             eventmask=(
@@ -538,7 +559,7 @@ class WM:
         self.hook.register("MapRequest", self.on_map_request)
         self.hook.register("MapNotify", self.on_map_notify)
         self.hook.register("UnmapNotify", self.on_window_unmap)
-        self.hook.register("KeyPress",   self.on_key_press)
+        self.hook.register("KeyPress", self.on_key_press)
         # self.hook.register("KeyRelease", self.on_key_release)
         # self.hook.register("CreateNotify", self.on_window_create)
         self.hook.register("DestroyNotify", self.on_window_destroy)
@@ -598,7 +619,7 @@ class WM:
         window = self.windows[wid]
         self.hook.fire("window_enter", window)
 
-    def grab_key(self, modifiers, key,  owner_events=False, window=None):
+    def grab_key(self, modifiers, key, owner_events=False, window=None):
         """ Intercept this key when it is pressed. If owner_events=False then
             the window in focus will not receive it. This is useful from WM hotkeys.
         """
@@ -668,6 +689,16 @@ class WM:
         )
         self.flush()  # TODO: do we need this?
         return event
+
+    def switch_to_desk(self, desktop):
+        with self.hook.suppress("EnterNotify"):
+            if isinstance(desktop, int):
+                desktop = self.desktops[desktop]
+            self.log.debug("switching from {} to {}".format(
+                self.cur_desktop, desktop))
+            self.cur_desktop.hide()
+            self.cur_desktop = desktop
+            self.cur_desktop.show()
 
     def on_mouse_event(self, evname, xcb_event):
         """evname is one of ButtonPress, ButtonRelease or MotionNotify."""
@@ -761,6 +792,7 @@ class WM:
         self._eventloop.stop()
 
     def restart(self):
+        self.log.notice("restarting WM")
         self.stop()
         import os
         os.execv("swm.py", ["swm.py"])
@@ -807,6 +839,11 @@ class WM:
                 traceback.print_exc()
         self.flush()  # xcb often doesn't flush implicitly
 
+    def hotkey(self, keys, cmd):
+        @wm.hook(wm.grab_key(*keys))
+        def cb(event):
+            run_(cmd)
+
 
 # class SupressEvent(Exception):
 #   """ Raise this one in callback if further callbacks shouldn't be called. """
@@ -818,6 +855,7 @@ class Hook:
     def __init__(self):
         self.cb_map = defaultdict(list)
         self.log = Log("hook")
+        self.suppressed = set()
 
     def decor(self, event):
         def wrap(cb):
@@ -832,9 +870,31 @@ class Hook:
     def has_hook(self, event):
         return event in self.cb_map
 
+    def suppress(self, event):
+        hook = self
+
+        class Context:
+
+            def __enter__(self):
+                hook.log.debug("suppressing %s" % event)
+                hook.suppressed.add(event)
+
+            def __exit__(self, *args):
+                hook.log.debug("un-suppressing %s" % event)
+                if event in hook.suppressed:
+                    hook.suppressed.remove(event)
+                else:
+                    hook.log.notice("uhm, event is not suppressed: %s" % event)
+        return Context()
+
     def fire(self, event, *args, **kwargs):
         if event not in self.cb_map:
             self.log.notice("no handler for %s" % event)
+            return
+
+        if event in self.suppressed:
+            self.log.debug(
+                "event suppressed: {} {} {}".format(event, args, kwargs))
             return
 
         handlers = self.cb_map[event]
@@ -848,9 +908,11 @@ class Hook:
                     .format(err=err, typ=type(err), ev=event, hdl=handler)
                 self.log.error(msg)
 
+        if DEBUG:
+            time.sleep(0.1)
+
 
 if __name__ == '__main__':
-    import subprocess
     up, down, left, right = 'Up', 'Down', 'Left', 'Right'
     win = fail = 'mod4'
     ctrl = control = 'control'
@@ -860,13 +922,21 @@ if __name__ == '__main__':
     MouseL = 1
     MouseC = 2
     MouseR = 3
-    wm = WM()
     log = Log("USER HOOKS")
 
-    mod = ctrl
+    mod = win
+
+    num_desktops = 9
+    desktops = [Desktop(name=str(i)) for i in range(num_desktops)]
+    wm = WM(desktops=desktops)
 
     orig_coordinates = None
     orig_geometry = None
+
+    for i in range(1, num_desktops + 1):
+        @wm.hook(wm.grab_key([mod], str(i)))
+        def switch_to1(event, i=i):
+            wm.switch_to_desk(i - 1)
 
     @wm.hook(wm.grab_mouse([alt], MouseL))
     def on_mouse(evhandler, evtype, xcb_ev):
@@ -910,7 +980,7 @@ if __name__ == '__main__':
         window.focus()
         window.rise()
         wm.cur_desktop.cur_focus = window
-        window.warp()
+        # window.warp()
 
     def get_edges(windows, vert=False):
         vstart, vstop, hstart, hstop = [], [], [], []
@@ -990,12 +1060,12 @@ if __name__ == '__main__':
 
     @wm.hook(wm.grab_key([mod], up))
     def move_up(event):
-        step = 5
+        # step = 5
         wm.cur_desktop.cur_focus.move(dy=-step).warp()
 
     @wm.hook(wm.grab_key([mod], down))
     def move_down(event):
-        step = 5
+        # step = 5
         wm.cur_desktop.cur_focus.move(dy=step).warp()
 
     # FOCUS
@@ -1030,17 +1100,16 @@ if __name__ == '__main__':
         # TODO: switch to next window?
 
     # SPAWN
-    @wm.hook(wm.grab_key([mod], 'x'))
-    def spawn_console(event):
-        run("urxvt")
-
-    @wm.hook(wm.grab_key([mod], 'd'))
-    def spawn_dmenu(event):
-        run("dmenu_run")
+    wm.hotkey(([mod], 'x'), 'urxvtcd -rv -fade 50 -fn "xft:Terminus:size=16" -fb "xft:Terminus:bold:size=16" -sl 10000 -si -tn xterm')
+    wm.hotkey(([mod], 'd'), "dmenu_run")
+    wm.hotkey(([alt], down), "asus-kbd-backlight down")
+    wm.hotkey(([alt], up), "asus-kbd-backlight up")
+    wm.hotkey(([ctrl, win], up), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness --min=10 --max /sys/class/backlight/intel_backlight/max_brightness -- +10%")
+    wm.hotkey(([ctrl, win], down), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness --min=10 --max /sys/class/backlight/intel_backlight/max_brightness -- -10%")
 
     # OTHER
     @wm.hook(wm.grab_key([mod], 'w'))
-    def maximize(event):
+    def kill_window(event):
         wm.cur_desktop.cur_focus.kill()
 
     @wm.hook(wm.grab_key([mod], 's'))
