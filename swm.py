@@ -215,7 +215,8 @@ class Window:
         self._conn = self.wm._conn
         self.prev_geometry = None
         self.name = name or self.get_name()  # TODO: this is not updated
-        self.log = Log(str(self))  # do it after self.name is set (so repr works)
+        # do it after self.name is set (so repr works)
+        self.log = Log(str(self))
         self.mapped = mapped
         # subscribe for notifications
         self._conn.core.ChangeWindowAttributesChecked(
@@ -423,7 +424,7 @@ class Window:
     def __repr__(self):
         name = self.name
         if len(name) > 20:
-          name = name[:17] + '...'
+            name = name[:17] + '...'
         return "Window(%s, \"%s\")" % (self.wid, name)
 
 
@@ -790,6 +791,9 @@ class WM:
     def stop(self):
         """ It does what it says. """
         self.hook.fire("on_exit")
+        # display all hidden windows
+        for window in self.windows.values():
+            window.show()
         self.xsync()
         self.log.stop.debug("stopping event loop")
         self._eventloop.stop()
@@ -912,4 +916,4 @@ class Hook:
                 self.log.error(msg)
 
         if DEBUG:
-            time.sleep(0.05)
+            time.sleep(0.03)
