@@ -208,8 +208,8 @@ class Desktop:
 class Window:
 
     def __init__(self, wm, wid, mapped=True, name=None):
-        assert isinstance(wid, int), "wid must be int"
         assert isinstance(wm, WM), "wid must be an instance of WM"
+        assert isinstance(wid, int), "wid must be int"
         self.wid = wid
         self.wm = wm
         self._conn = self.wm._conn
@@ -225,6 +225,7 @@ class Window:
     def show(self):
         self.log.show.debug("showing")
         self._conn.core.MapWindow(self.wid)  # TODO: is sync needed?
+        self.wm.xsync()
         self.mapped = True
 
     def hide(self):
@@ -621,6 +622,7 @@ class WM:
     def on_window_enter(self, evname, xcb_event):
         wid = xcb_event.event
         window = self.windows[wid]
+        self.log.on_window_enter("window_enter: %s %s" % (wid, window))
         self.hook.fire("window_enter", window)
 
     def grab_key(self, modifiers, key, owner_events=False, window=None):
@@ -695,7 +697,7 @@ class WM:
         return event
 
     def switch_to_desk(self, desktop):
-        with self.hook.suppress("EnterNotify"):
+        #with self.hook.suppress("EnterNotify"):
             if isinstance(desktop, int):
                 desktop = self.desktops[desktop]
             self.log.debug("switching from {} to {}".format(
@@ -915,5 +917,5 @@ class Hook:
                     .format(err=err, typ=type(err), ev=event, hdl=handler)
                 self.log.error(msg)
 
-        if DEBUG:
-            time.sleep(0.03)
+        #if DEBUG:
+        #    time.sleep(0.03)
