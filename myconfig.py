@@ -4,12 +4,15 @@ from useful.log import Log
 from swm import WM, Desktop, prints, run_
 
 import os.path
+import sys
+
 
 if 1:
     up, down, left, right = 'Up', 'Down', 'Left', 'Right'
     win = fail = 'mod4'
     ctrl = control = 'control'
     shift = 'shift'
+    caps = 'Caps_Lock'
     alt = 'mod1'
     tab = 'Tab'
     MouseL = 1
@@ -25,11 +28,27 @@ if 1:
 
     orig_coordinates = None
     orig_geometry = None
+    cur_desk_idx = 0
 
+    # DESKTOP SWITCHING
     for i in range(1, num_desktops + 1):
         @wm.hook(wm.grab_key([mod], str(i)))
         def switch_to1(event, i=i):
             wm.switch_to_desk(i - 1)
+
+    @wm.hook(wm.grab_key([mod], right))
+    def next_desktop(event):
+        global cur_desk_idx
+        cur_desk_idx += 1
+        cur_desk_idx %= num_desktops
+        wm.switch_to_desk(cur_desk_idx)
+
+    @wm.hook(wm.grab_key([mod], left))
+    def next_desktop(event):
+        global cur_desk_idx
+        cur_desk_idx -= 1
+        cur_desk_idx %= num_desktops
+        wm.switch_to_desk(cur_desk_idx)
 
     @wm.hook(wm.grab_mouse([alt], MouseL))
     def on_mouse(evhandler, evtype, xcb_ev):
@@ -193,12 +212,24 @@ if 1:
         # TODO: switch to next window?
 
     # SPAWN
+    # terminals, etc
     wm.hotkey(([mod], 'x'), 'urxvtcd -rv -fade 50 -fn "xft:Terminus:size=16" -fb "xft:Terminus:bold:size=16" -sl 10000 -si -tn xterm')
     wm.hotkey(([mod], 'd'), "dmenu_run")
+    wm.hotkey(([mod], 'l'), "mylock")
+    # kbd layout
+    wm.hotkey(([], caps), "setxkbmap -layout us")
+    wm.hotkey(([shift], caps), "setxkbmap -layout ru")
+    # brightness
     wm.hotkey(([alt], down), "asus-kbd-backlight down")
     wm.hotkey(([alt], up), "asus-kbd-backlight up")
-    wm.hotkey(([ctrl, win], up), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness --min=10 --max /sys/class/backlight/intel_backlight/max_brightness -- +10%")
-    wm.hotkey(([ctrl, win], down), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness --min=10 --max /sys/class/backlight/intel_backlight/max_brightness -- -10%")
+    wm.hotkey(([ctrl, win], up), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness  \
+                                                --min=10  \
+                                                --max /sys/class/backlight/intel_backlight/max_brightness  \
+                                                -- +10%")
+    wm.hotkey(([ctrl, win], down), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness  \
+                                                  --min=10  \
+                                                  --max /sys/class/backlight/intel_backlight/max_brightness  \
+                                                  -- -10%")
 
     # OTHER
     @wm.hook(wm.grab_key([mod], 'w'))
@@ -236,4 +267,25 @@ if 1:
 
     # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
     # because wm.loop is blocking.
+    from useful.libgui import mywrapper, myinput, Border, VList, CMDInput, Text
+
+    @mywrapper
+    def gui(loop):
+        root = Border(
+            VList(
+                Border(Text(id='logwin'), label="Logs"),
+                Border(CMDInput(id='cmdinpt'), label="CMD Input")
+            )
+        )
+        root.initroot()
+
+        inpt = myinput(timeout=0)
+
+        def reader():
+            key = next(inpt)
+            if root.cur_focus:
+                root.cur_focus.input(key)
+        loop.add_reader(sys.stdin, reader)
+
+    gui(loop=wm._eventloop)
     wm.loop()
