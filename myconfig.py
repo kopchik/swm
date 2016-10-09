@@ -84,7 +84,7 @@ if 1:
     #   print("new window", window)
 
     @wm.hook("window_enter")
-    def switch_focus(event, window):
+    def switch_focus(event, window, warp=False):
         # do not switch focus when moving over root window
         if window == wm.root:
             return
@@ -92,7 +92,8 @@ if 1:
         window.focus()
         window.rise()
         wm.cur_desktop.cur_focus = window
-        # window.warp()
+        if warp:
+          window.warp()
 
     def get_edges(windows, vert=False):
         vstart, vstop, hstart, hstop = [], [], [], []
@@ -135,7 +136,7 @@ if 1:
         window.warp()
 
     # RESIZE
-    step = 100
+    step = 200
 
     @wm.hook(wm.grab_key([mod, shift], right))
     def expand_width(event):
@@ -160,28 +161,28 @@ if 1:
         wm.cur_desktop.cur_focus.toggle_maximize()
 
     # MOVE
-    @wm.hook(wm.grab_key([mod], right))
+    @wm.hook(wm.grab_key([alt], right))
     def move_right(event):
         # wm.cur_desktop.cur_focus.move(dx=step).warp()
         smart_snap('x', step)
 
-    @wm.hook(wm.grab_key([mod], left))
+    @wm.hook(wm.grab_key([alt], left))
     def move_left(event):
         # wm.cur_desktop.cur_focus.move(dx=-step).warp()
         smart_snap('x', -step)
 
-    @wm.hook(wm.grab_key([mod], up))
+    @wm.hook(wm.grab_key([alt], up))
     def move_up(event):
         # step = 5
         wm.cur_desktop.cur_focus.move(dy=-step).warp()
 
-    @wm.hook(wm.grab_key([mod], down))
+    @wm.hook(wm.grab_key([alt], down))
     def move_down(event):
         # step = 5
         wm.cur_desktop.cur_focus.move(dy=step).warp()
 
     # FOCUS
-    @wm.hook(wm.grab_key([alt], 'Tab'))
+    @wm.hook(wm.grab_key([alt], tab))
     def next_window(event):
         desktop = wm.cur_desktop
         cur = desktop.cur_focus
@@ -189,7 +190,7 @@ if 1:
         nxt = desktop.windows[cur_idx - 1]
         if nxt == wm.root:  # TODO: dirty hack because switch_focus does not switch to root
             nxt = desktop.windows[cur_idx - 2]
-        switch_focus("some_fake_ev", nxt)
+        switch_focus("some_fake_ev", nxt, warp=True)
 
     @wm.hook(wm.grab_key([mod], 'n'))
     def prev_window(event):
@@ -199,7 +200,7 @@ if 1:
         cur_idx = windows.index(cur)
         tot = len(windows)
         nxt = desktop.windows[(cur_idx + 1) % tot]
-        switch_focus("some_fake_ev", nxt)
+        switch_focus("some_fake_ev", nxt, warp=True)
 
     # DESKTOP
     @wm.hook(wm.grab_key([mod], 'h'))
@@ -219,17 +220,20 @@ if 1:
     # kbd layout
     wm.hotkey(([], caps), "setxkbmap -layout us")
     wm.hotkey(([shift], caps), "setxkbmap -layout ru")
+    # volume
+    wm.hotkey(([mod], 'period'), "sound_volume up")
+    wm.hotkey(([mod], 'comma'), "sound_volume down")
     # brightness
-    wm.hotkey(([alt], down), "asus-kbd-backlight down")
-    wm.hotkey(([alt], up), "asus-kbd-backlight up")
-    wm.hotkey(([ctrl, win], up), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness  \
-                                                --min=10  \
-                                                --max /sys/class/backlight/intel_backlight/max_brightness  \
-                                                -- +10%")
-    wm.hotkey(([ctrl, win], down), "sudo value.py --set /sys/class/backlight/intel_backlight/brightness  \
-                                                  --min=10  \
-                                                  --max /sys/class/backlight/intel_backlight/max_brightness  \
-                                                  -- -10%")
+    wm.hotkey(([shift, alt], down), "asus-kbd-backlight down")
+    wm.hotkey(([shift, alt], up), "asus-kbd-backlight up")
+    wm.hotkey(([ctrl, win], up), "value.py --set /sys/class/backlight/intel_backlight/brightness  \
+                                           --min=10  \
+                                           --max /sys/class/backlight/intel_backlight/max_brightness  \
+                                           -- +10%")
+    wm.hotkey(([ctrl, win], down), "value.py --set /sys/class/backlight/intel_backlight/brightness  \
+                                             --min=10  \
+                                             --max /sys/class/backlight/intel_backlight/max_brightness  \
+                                             -- -10%")
 
     # OTHER
     @wm.hook(wm.grab_key([mod], 'w'))
