@@ -6,7 +6,9 @@
 
 from useful.log import Log
 
-from swm import WM, Desktop, run_
+from utils import run_
+from wm import WM
+from desktop import Desktop
 from myosd import OSD
 from textgui import gui
 import os.path
@@ -92,7 +94,7 @@ def on_mouse_resize(evhandler, evtype, xcb_ev):
 
 
 # DESKTOP SWITCHING
-cur_desk_idx = 0
+cur_desk_idx = 1
 
 for i in range(1, num_desktops + 1):
     @wm.hook(wm.grab_key([mod], str(i)))
@@ -105,7 +107,7 @@ for i in range(1, num_desktops + 1):
         if not window:
             log.teleport_window.error("window is NONE!!!")
             return
-        wm.relocate_to(window, desktops[i])
+        wm.relocate_to(window, desktops[i - 1])
 
 
 @wm.hook(wm.grab_key([mod], right))
