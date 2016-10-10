@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
+# TODO: _NET_WM_STRUT_PARTIAL
+# t = namedtuple("STRUT", "left right top bottom left_start_y left_end_y right_start_y right_end_y top_start_x top_end_x bottom_start_x bottom_end_x".split())
+# t(0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 1919)
+# WM_CLASS(STRING) = "dzen2", "dzen"
 
 from useful.log import Log
-from swm import WM, Desktop, prints, run_
 
+from swm import WM, Desktop, run_
+from myosd import OSD
+from textgui import gui
 import os.path
 import sys
 
+from useful.prettybt import prettybt
+sys.excepthook = prettybt
 
 up, down, left, right = 'Up', 'Down', 'Left', 'Right'
 win = fail = 'mod4'
@@ -18,6 +26,7 @@ MouseL = 1
 MouseC = 2
 MouseR = 3
 log = Log("USER HOOKS")
+osd = OSD()
 
 mod = win
 
@@ -25,16 +34,78 @@ num_desktops = 4
 desktops = [Desktop(name=str(i)) for i in range(num_desktops)]
 wm = WM(desktops=desktops)
 loop = wm._eventloop
+logwidget = gui(loop=wm._eventloop)
+Log.file = logwidget
 
-orig_coordinates = None
+
+# MOUSE STUFF
+orig_pos = None
 orig_geometry = None
-cur_desk_idx = 0
+
+# move
+
+
+@wm.hook(wm.grab_mouse([mod], MouseL))
+def on_mouse_move(evhandler, evtype, xcb_ev):
+    global orig_pos
+    global orig_geometry
+    cur_pos = xcb_ev.root_x, xcb_ev.root_y
+    window = wm.cur_desktop.cur_focus
+    if evtype == "ButtonPress":
+        orig_pos = cur_pos
+        orig_geometry = window.geometry
+        log.on_mouse_move.debug(
+            "orig_pos: {}, orig_geom: {}".format(orig_pos, orig_geometry))
+    elif evtype == "ButtonRelease":
+        orig_pos = None
+        orig_geometry = None
+    elif evtype == "MotionNotify":
+        dx = cur_pos[0] - orig_pos[0]
+        dy = cur_pos[1] - orig_pos[1]
+        x = max(0, orig_geometry[0] + dx)
+        y = max(0, orig_geometry[1] + dy)
+        window.move(x=x, y=y)
+
+# resize
+
+
+@wm.hook(wm.grab_mouse([mod], MouseR))
+def on_mouse_resize(evhandler, evtype, xcb_ev):
+    global orig_pos
+    global orig_geometry
+    cur_pos = xcb_ev.root_x, xcb_ev.root_y
+    window = wm.cur_desktop.cur_focus
+    if evtype == "ButtonPress":
+        orig_pos = cur_pos
+        orig_geometry = window.geometry
+        log.on_mouse_resize.debug(
+            "orig_pos: {}, orig_geom: {}".format(orig_pos, orig_geometry))
+    elif evtype == "ButtonRelease":
+        orig_pos = None
+        orig_geometry = None
+    elif evtype == "MotionNotify":
+        dx = cur_pos[0] - orig_pos[0]
+        dy = cur_pos[1] - orig_pos[1]
+        # x = max(0, orig_geometry[0] + dx)
+        # y = max(0, orig_geometry[1] + dy)
+        window.resize(dx=dx, dy=dy)
+
 
 # DESKTOP SWITCHING
+cur_desk_idx = 0
+
 for i in range(1, num_desktops + 1):
     @wm.hook(wm.grab_key([mod], str(i)))
-    def switch_to1(event, i=i):
-        wm.switch_to_desk(i - 1)
+    def switch_to(event, i=i):
+        wm.switch_to(i - 1)
+
+    @wm.hook(wm.grab_key([shift, mod], str(i)))
+    def teleport_window(event, i=i):
+        window = wm.cur_desktop.cur_focus
+        if not window:
+            log.teleport_window.error("window is NONE!!!")
+            return
+        wm.relocate_to(window, desktops[i])
 
 
 @wm.hook(wm.grab_key([mod], right))
@@ -42,51 +113,33 @@ def next_desktop(event):
     global cur_desk_idx
     cur_desk_idx += 1
     cur_desk_idx %= num_desktops
-    wm.switch_to_desk(cur_desk_idx)
+    wm.switch_to(cur_desk_idx)
+    osd.write(cur_desk_idx)
 
 
 @wm.hook(wm.grab_key([mod], left))
-def next_desktop(event):
+def prev_desktop(event):
     global cur_desk_idx
     cur_desk_idx -= 1
     cur_desk_idx %= num_desktops
-    wm.switch_to_desk(cur_desk_idx)
+    wm.switch_to(cur_desk_idx)
+    osd.write(cur_desk_idx)
 
-
-@wm.hook(wm.grab_mouse([alt], MouseL))
-def on_mouse(evhandler, evtype, xcb_ev):
-    global orig_coordinates
-    global orig_geometry
-    cur_pos = xcb_ev.root_x, xcb_ev.root_y
-    window = wm.cur_desktop.cur_focus
-    if evtype == "ButtonPress":
-        orig_coordinates = cur_pos
-        orig_geometry = window.geometry
-        prints(
-            "orig_coord: {orig_coordinates}, orig_geom: {orig_geometry}")
-    elif evtype == "ButtonRelease":
-        orig_coordinates = None
-        orig_geometry = None
-    elif evtype == "MotionNotify":
-        dx = cur_pos[0] - orig_coordinates[0]
-        dy = cur_pos[1] - orig_coordinates[1]
-        x = orig_geometry[0] + dx
-        y = orig_geometry[1] + dy
-        if x < 0 or y < 0:
-            x = max(0, x)
-            y = max(0, y)
-        # if x < 0 or y < 0:
-            # orig_coordinates = cur_pos
-            # orig_geometry = window.geometry
-        window.move(x=x, y=y)
 
 # There are a lot of windows created and most of them not supposed
 # to be managed by WM. Thus, this hook is pretty much useless
-# @wm.hook("window_create")
-# def window_create(event, window):
-#   print("new window", window)
+@wm.hook("new_window")
+def on_window_create1(event, window):
+    logentry = log.on_window_create.notice
+
+    logentry("#####################")
+    logentry("new window %s" % window)
+    logentry("attributes: %s" % window.list_props())
+    logentry("_____________________")
 
 prev_handler = None
+
+
 @wm.hook("window_enter")
 def on_window_enter(event, window):
     global prev_handler
@@ -101,18 +154,13 @@ def on_window_enter(event, window):
     prev_handler = loop.call_later(0.15, _switch)
 
 
+# TODO: get rid of this function in favor of wm.focus_on()
 def switch_focus(event, window, warp=False):
     # do not switch focus when moving over root window
     if window == wm.root:
         return
-
-    # Achtung! Order here is very important or focus will now work correctly
-    window.rise()
-    window.focus()
-    window.show()
-    if warp:
-        window.warp()
-    wm.cur_desktop.cur_focus = window
+    wm.focus_on(window)
+    osd.write(window)
 
 
 def get_edges(windows, vert=False):
@@ -158,6 +206,7 @@ def smart_snap(attr, step):
         window.set_geometry(x=snap)
     window.warp()
 
+
 # RESIZE
 step = 200
 
@@ -188,8 +237,8 @@ def shrink_height(event):
 def maximize(event):
     wm.cur_desktop.cur_focus.toggle_maximize()
 
-# MOVE
 
+# MOVE
 
 @wm.hook(wm.grab_key([alt], right))
 def move_right(event):
@@ -213,6 +262,7 @@ def move_up(event):
 def move_down(event):
     # step = 5
     wm.cur_desktop.cur_focus.move(dy=step).warp()
+
 
 # FOCUS
 
@@ -238,17 +288,6 @@ def prev_window(event):
     nxt = desktop.windows[(cur_idx + 1) % tot]
     switch_focus("some_fake_ev", nxt, warp=True)
 
-# DESKTOP
-
-
-@wm.hook(wm.grab_key([mod], 'h'))
-def hide_window(event):
-    desktop = wm.cur_desktop
-    windows = desktop.windows
-    cur = desktop.cur_focus
-    cur_idx = windows.index(cur)
-    cur.hide()
-    # TODO: switch to next window?
 
 # SPAWN
 # terminals, etc
@@ -276,6 +315,17 @@ wm.hotkey(([ctrl, win], down), "value.py --set /sys/class/backlight/intel_backli
 # OTHER
 
 
+# TODO: rewrite it to use wm.hide
+@wm.hook(wm.grab_key([mod], 'h'))
+def hide_window(event):
+    desktop = wm.cur_desktop
+    # windows = desktop.windows
+    cur = desktop.cur_focus
+    # cur_idx = windows.index(cur)
+    cur.hide()
+    # TODO: switch to next window?
+
+
 @wm.hook(wm.grab_key([mod], 'w'))
 def kill_window(event):
     wm.cur_desktop.cur_focus.kill()
@@ -283,12 +333,14 @@ def kill_window(event):
 
 @wm.hook(wm.grab_key([mod], 's'))
 def status(event):
-    from useful.mstring import prints
+    root = wm.root
     focus = wm.cur_desktop.cur_focus
-    prints("root: {root}, focus: {focus}")
+    log.status.debug("root: {root}, focus: {focus}".format(
+        root=root, focus=focus))
     for wid in sorted(wm.windows):
         window = wm.windows[wid]
-        prints("{wid:<10} {window.name:<20} {window.mapped:<10}")
+        log.status.debug("{wid:<10} {window.name:<20} {window.mapped:<10}".format(
+            wid=wid, window=window))
 
 # restore windows, otherwise they will stay invisible
 
@@ -312,29 +364,6 @@ def on_exit(*args, **kwargs):
         window.show()
 
 run_("xsetroot -solid Teal")
-
-from useful.libgui import mywrapper, myinput, Border, VList, CMDInput, Text
-
-
-@mywrapper
-def gui(loop):
-    root = Border(
-        VList(
-            Border(Text(id='logwin'), label="Logs"),
-            Border(CMDInput(id='cmdinpt'), label="CMD Input")
-        )
-    )
-    root.initroot()
-
-    inpt = myinput(timeout=0)
-
-    def reader():
-        key = next(inpt)
-        if root.cur_focus:
-            root.cur_focus.input(key)
-    loop.add_reader(sys.stdin, reader)
-
-gui(loop=wm._eventloop)
 
 # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
 # because wm.loop is blocking.

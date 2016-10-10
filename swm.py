@@ -18,7 +18,6 @@ import asyncio
 import traceback
 import signal
 import shlex
-import time
 import sys
 import os
 
@@ -29,11 +28,10 @@ import xcffib.randr
 import xcffib.xproto
 import xcffib
 
-from defs import XCB_CONN_ERRORS, WINDOW_TYPES, \
+from defs import XCB_CONN_ERRORS, \
     PROPERTYMAP, SUPPORTED_ATOMS, ModMasks
 from xkeysyms import keysyms
 
-from useful.mstring import prints
 from useful.log import Log
 
 DEBUG = True
@@ -113,7 +111,7 @@ class AtomCache:
             c = self.conn.core.InternAtom(False, len(name), name)
             atom = c.reply().atom
         if name is None:
-            c = self.conn.conn.core.GetAtomName(atom)
+            c = self.conn.core.GetAtomName(atom)
             name = c.reply().name.to_string()
         self.atoms[name] = atom
         self.reverse[atom] = name
@@ -154,7 +152,6 @@ class Xrandr:
         # print("XXXXXXXX", reply)
 
 
-# TODO: suppress events
 class Desktop:
     """ Support for virtual desktops. """
 
@@ -169,22 +166,21 @@ class Desktop:
         self.cur_focus = None
         self.prev_focus = None
         self.were_mapped = []
-
-    def get_prev_focus(self):
-        raise NotImplementedError
-
-    def get_next_focus(self):
-        raise NotImplementedError
+        self.hidden = True
 
     def show(self):
+        self.hidden = False
         for window in self.were_mapped:
             self.log.debug("showing window %s" % window)
             window.show()
         else:
             self.log.debug("no windows on this desktop to show")
         self.were_mapped.clear()
+        if self.cur_focus:
+            self.cur_focus.focus()
 
     def hide(self):
+        self.hidden = True
         for window in self.windows:
             if window.mapped:
                 self.log.debug("hiding window %s" % window)
@@ -192,14 +188,38 @@ class Desktop:
                 self.were_mapped.append(window)
         self.log.debug("followind windows were hidden: %s" % self.were_mapped)
 
-    def window_add(self, window):
-        if not self.cur_focus:
+    def add(self, window):
+        self.windows.append(window)
+        if self.hidden:
+            self.were_mapped.append(window)
+        else:
+            window.show()
+            window.focus()
             self.cur_focus = window
-        raise NotImplementedError
 
-    def window_remove(self, window):
+    def remove(self, window):
+        if window not in self.windows:
+            self.log.error("NO WINDOW %s" % window)
+            self.log.error("current windows: %s", self.windows)
+            return
+
         self.windows.remove(window)
-        raise NotImplementedError
+        if not self.hidden:
+            window.hide()
+        if window == self.cur_focus:
+            self.cur_focus = None
+
+    def focus_on(self, window, warp=False):
+        assert window in self.windows, "window %s is not on current desktop" % window
+        assert not self.hidden, "cannot focus while desktop is hidden"
+        # Achtung! Order here is very important or focus will now work
+        # correctly
+        window.rise()
+        window.focus()
+        window.show()
+        if warp:
+            window.warp()
+        self.cur_focus = window
 
     def __repr__(self):
         return "Desktop(%s)" % self.name
@@ -208,7 +228,7 @@ class Desktop:
 class Window:
 
     def __init__(self, wm, wid, mapped=True, name=None):
-        assert isinstance(wm, WM), "wid must be an instance of WM"
+        assert isinstance(wm, WM), "wm must be an instance of WM"
         assert isinstance(wid, int), "wid must be int"
         self.wid = wid
         self.wm = wm
@@ -289,7 +309,7 @@ class Window:
             self.prev_geometry = self.geometry
             screen = self.wm.xrandr.screen
             self.set_geometry(x=0, y=0, width=screen.width -
-                              1, height=screen.height - 1)
+                              1, height=screen.height - 1 - 18)  # TODO: 18 dirtyhack to place bottom panel
             self.rise()
 
     @property
@@ -342,6 +362,7 @@ class Window:
         return self
 
     def get_attributes(self):
+        """ Returns https://tronche.com/gui/x/xlib/window-information/XGetWindowAttributes.html . """
         return self._conn.core.GetWindowAttributes(self.wid).reply()
 
     def set_attr(self, **kwargs):
@@ -419,6 +440,11 @@ class Window:
             value
         ).check()
 
+    def list_props(self):
+        reply = self.wm._conn.core.ListProperties(self.wid).reply()
+        atoms = reply.atoms.list
+        return [self.wm.atoms.get_name(atom) for atom in atoms]
+
     def __lt__(self, other):  # used for sorting and comparison
         return True
 
@@ -436,6 +462,7 @@ class Keyboard:
         self._conn = conn
         self.code_to_syms = {}
         self.first_sym_to_code = {}
+        self.log = Log("keyboard")
 
         first = xcb_setup.min_keycode
         count = xcb_setup.max_keycode - xcb_setup.min_keycode + 1
@@ -454,6 +481,7 @@ class Keyboard:
     def key_to_code(self, key):
         assert key in keysyms, "unknown key"  # TODO: generate warning
         sym = keysyms[key]
+        self.log(sorted(self.first_sym_to_code))
         return self.first_sym_to_code[sym]
 
 
@@ -471,7 +499,9 @@ class WM:
         self.log = Log("WM")
         # INIT SOME BASIC STUFF
         self.hook = Hook()
-        self.windows = {}
+        self.windows = {}  # mapping between window id and Window
+        self.win2desk = {}
+
         if not display:
             display = os.environ.get("DISPLAY")
 
@@ -483,6 +513,7 @@ class WM:
         self.atoms = AtomCache(self._conn)
         self.desktops = desktops or [Desktop()]
         self.cur_desktop = self.desktops[0]
+        self.cur_desktop.show()
 
         # CREATE ROOT WINDOW
         xcb_setup = self._conn.get_setup()
@@ -545,7 +576,8 @@ class WM:
 
         # GET LIST OF ALL PRESENT WINDOWS AND FOCUS ON THE LAST
         self.scan()     #
-        self.cur_desktop.cur_focus = sorted(self.windows.values())[-1].focus()
+        window_to_focus = sorted(self.windows.values())[-1].focus()
+        self.cur_desktop.focus_on(window_to_focus, warp=True)
 
         # TODO: self.update_net_desktops()
 
@@ -578,16 +610,26 @@ class WM:
         """ Map request is a request to draw the window on screen. """
         wid = xcb_event.window
         if wid not in self.windows:
-            window = Window(self, wid, mapped=True)
-            self.log.CreateNotify.debug(
-                "new window for ready for mapping: %s" % window)
-            self.windows[wid] = window
-            self.cur_desktop.windows.append(window)
+            self.on_new_window(wid)
         else:
             window = self.windows[wid]
             self.log.CreateNotify.debug("map request for %s" % window)
         window.show()
         window.focus()
+
+    def on_new_window(self, wid):
+        window = Window(wm=self, wid=wid, mapped=True)
+        self.log.CreateNotify.debug(
+            "new window for ready for mapping: %s" % window)
+        self.windows[wid] = window
+        self.win2desk[window] = self.cur_desktop
+        if window.name == "dzen title":
+            self.log.notice("dzen is to be shown on all windows!")
+            for desktop in self.desktops:
+                desktop.add(window)
+        else:
+            self.cur_desktop.windows.append(window)
+        self.hook.fire("new_window", window)
 
     def on_map_notify(self, evname, xcb_event):
         wid = xcb_event.window
@@ -611,6 +653,9 @@ class WM:
         if wid not in self.windows:
             return
         window = self.windows[wid]
+        assert isinstance(window, Window), "it's not a window: %s (%s)" % (
+            window, type(window))
+
         for desktop in self.desktops:
             try:
                 desktop.windows.remove(window)
@@ -618,6 +663,7 @@ class WM:
             except ValueError:
                 pass
         del self.windows[wid]
+        del self.win2desk[window]
 
     def on_window_enter(self, evname, xcb_event):
         wid = xcb_event.event
@@ -636,6 +682,7 @@ class WM:
         # `keysum' is what should be written on they key cap (physical keyboard)
         # and `keycode' is a number reported by the keyboard when the key is pressed.
         # Modifiers are keys like Shift, Alt, Win and some other buttons.
+        self.log.grab_key.debug("intercept keys: %s %s" % (modifiers, key))
 
         if window is None:
             window = self.root
@@ -696,15 +743,36 @@ class WM:
         self.flush()  # TODO: do we need this?
         return event
 
-    def switch_to_desk(self, desktop):
-        #with self.hook.suppress("EnterNotify"):
-            if isinstance(desktop, int):
-                desktop = self.desktops[desktop]
-            self.log.debug("switching from {} to {}".format(
-                self.cur_desktop, desktop))
-            self.cur_desktop.hide()
-            self.cur_desktop = desktop
-            self.cur_desktop.show()
+    def hotkey(self, keys, cmd):
+        @self.hook(self.grab_key(*keys))
+        def cb(event):
+            run_(cmd)
+
+    def focus_on(self, window, warp=False):
+        self.cur_desktop.focus_on(window, warp)
+
+    def switch_to(self, desktop):
+        if isinstance(desktop, int):
+            desktop = self.desktops[desktop]
+        if self.cur_desktop == desktop:
+            self.log.notice("attempt to switch to the same desktop")
+            return
+        self.log.debug("switching from {} to {}".format(
+            self.cur_desktop, desktop))
+        self.cur_desktop.hide()
+        self.cur_desktop = desktop
+        self.cur_desktop.show()
+
+    def relocate_to(self, window, to_desktop):
+        from_desktop = self.cur_desktop
+
+        if from_desktop == to_desktop:
+            self.log.debug(
+                "no need to relocate %s because remains on the same desktop" % window)
+            return
+
+        from_desktop.remove(window)
+        to_desktop.add(window)
 
     def on_mouse_event(self, evname, xcb_event):
         """evname is one of ButtonPress, ButtonRelease or MotionNotify."""
@@ -722,7 +790,7 @@ class WM:
         self.hook.fire(event, evname, xcb_event)
 
     def on_configure_window(self, _, event):
-            # This code is so trivial that I just took it from fpwm as is :)
+        # This code is so trivial that I just took it from fpwm as is :)
         values = []
         if event.value_mask & ConfigWindow.X:
             values.append(event.x)
@@ -759,7 +827,8 @@ class WM:
         return Window(self, wid)
 
     def scan(self):
-        """ Get all windows in the system. """
+        """ Gets all windows in the system. """
+        self.log.debug("performing scan of all mapped windows")
         q = self._conn.core.QueryTree(self.root.wid).reply()
         for wid in q.children:
             attrs = self._conn.core.GetWindowAttributes(wid).reply()
@@ -791,7 +860,7 @@ class WM:
         self._conn.core.GetInputFocus().reply()
 
     def stop(self):
-        """ It does what it says. """
+        """ Stop WM to quit. """
         self.hook.fire("on_exit")
         # display all hidden windows
         for window in self.windows.values():
@@ -845,17 +914,8 @@ class WM:
                                       (error_string, error_code))
                     self.stop()
                     break
-                traceback.print_exc()
+                self.log.error(traceback.format_exc())
         self.flush()  # xcb often doesn't flush implicitly
-
-    def hotkey(self, keys, cmd):
-        @self.hook(self.grab_key(*keys))
-        def cb(event):
-            run_(cmd)
-
-
-# class SupressEvent(Exception):
-#   """ Raise this one in callback if further callbacks shouldn't be called. """
 
 
 class Hook:
@@ -913,9 +973,10 @@ class Hook:
             # except SupressEvent:
                 # break
             except Exception as err:
-                msg = "error on event {ev}: {err} ({typ}) (in {hdl})" \
-                    .format(err=err, typ=type(err), ev=event, hdl=handler)
+                # msg = "error on event {ev}: {err} ({typ}) (in {hdl})" \
+                #     .format(err=err, typ=type(err), ev=event, hdl=handler)
+                msg = traceback.format_exc()
                 self.log.error(msg)
 
-        #if DEBUG:
+        # if DEBUG:
         #    time.sleep(0.03)
