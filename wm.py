@@ -169,8 +169,10 @@ class WM:
 
         # GET LIST OF ALL PRESENT WINDOWS AND FOCUS ON THE LAST
         self.scan()     #
-        # window_to_focus = sorted(self.windows.values())[-1].focus()
-        # self.cur_desktop.focus_on(window_to_focus, warp=True)
+        window_to_focus = sorted(self.windows.values())[-1].focus()
+        if window_to_focus:
+            # on empty desktop there is nothing to focus on
+            self.cur_desktop.focus_on(window_to_focus, warp=True)
 
         # TODO: self.update_net_desktops()
 

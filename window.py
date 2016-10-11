@@ -168,6 +168,9 @@ class Window:
             mask |= xproto.ConfigWindow.Height
             values.append(height)
         # TODO: what the hell is *Checked and check?
+
+        # filter negative values
+        values = [max(value, 0) for value in values]
         self._conn.core.ConfigureWindowChecked(self.wid, mask, values).check()
 
     def get_name(self):

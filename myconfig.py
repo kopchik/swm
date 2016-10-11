@@ -34,7 +34,7 @@ MouseR = 3
 log = Log("USER HOOKS")
 osd = OSD()
 
-mod = ctrl
+mod = win
 
 # PRE-INIT
 # switch to english just in case
@@ -145,7 +145,7 @@ def prev_desktop(event):
 # CUSTOMIZE WINDOWS
 @wm.hook("new_window")
 def on_window_create(event, window: Window):
-    if window.name in ["dzen title", "XOSD"]:
+    if window.name in ["dzen title", "XOSD", "panel"]:
         window.sticky = True
         window.can_focus = False
         window.above_all = True
@@ -308,21 +308,19 @@ def move_down(event):
 # FOCUS
 def cycle_from(l, pos):
     from itertools import chain
-    for e in chain(l[pos + 1:], l[:pos]):
+    for e in chain(l[pos:], l[:pos]):
         yield e
 
 
 @wm.hook(wm.grab_key([alt], tab))
 def next_window(event):
     desktop = wm.cur_desktop
+    windows = desktop.windows
     cur = desktop.cur_focus
-    cur_idx = desktop.windows.index(cur)
-    for window in cycle_from(desktop.windows, cur_idx):
-        if window == wm.root:  # TODO: dirty hack because switch_focus does not switch to root
-            continue
-        if not window.can_focus:
-            continue
-        switch_focus("some_fake_ev", window, warp=True)
+    idx = windows.index(cur)
+    tot = len(windows)
+    nxt = windows[(idx - 1) % tot]
+    wm.focus_on(nxt, warp=True)
 
 
 @wm.hook(wm.grab_key([mod], 'n'))
@@ -330,10 +328,10 @@ def prev_window(event):
     desktop = wm.cur_desktop
     windows = desktop.windows
     cur = desktop.cur_focus
-    cur_idx = windows.index(cur)
+    idx = windows.index(cur)
     tot = len(windows)
-    nxt = desktop.windows[(cur_idx + 1) % tot]
-    switch_focus("some_fake_ev", nxt, warp=True)
+    nxt = windows[(idx + 1) % tot]
+    wm.focus_on(nxt, warp=True)
 
 
 # SPAWN
