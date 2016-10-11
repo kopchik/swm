@@ -20,6 +20,7 @@ import sys
 from useful.prettybt import prettybt
 sys.excepthook = prettybt
 
+# USEFUL ALIASES
 up, down, left, right = 'Up', 'Down', 'Left', 'Right'
 win = fail = 'mod4'
 ctrl = control = 'control'
@@ -35,10 +36,17 @@ osd = OSD()
 
 mod = win
 
+# PRE-INIT
+# switch to english just in case
+run_("setxkbmap -layout en")
+
+# create event loop and setup text GUI
 loop = asyncio.new_event_loop()
 # logwidget = gui(loop=loop)
 # Log.file = logwidget
 
+
+# INIT
 num_desktops = 4
 desktops = [Desktop(id=i, name=str(i + 1)) for i in range(num_desktops)]
 wm = WM(desktops=desktops, loop=loop)
@@ -75,7 +83,7 @@ def on_mouse_move(evhandler, evtype, xcb_ev):
 # resize
 
 
-@wm.hook(wm.grab_mouse([mod], MouseR))
+@wm.hook(wm.grab_mouse([mod, alt], MouseL))
 def on_mouse_resize(evhandler, evtype, xcb_ev):
     global orig_pos
     global orig_geometry
@@ -138,7 +146,7 @@ def prev_desktop(event):
 @wm.hook("new_window")
 def on_window_create(event, window: Window):
     if window.name in ["dzen title", "XOSD"]:
-        window.on_all_desks = True
+        window.sticky = True
         window.can_focus = False
         window.above_all = True
 
@@ -173,11 +181,15 @@ def on_window_enter(event, window):
 
     if prev_handler:
         prev_handler.cancel()
+
+    if window == wm.root:
+      return
+
     log._switch.debug("delaying activation of %s" % window)
 
-    def _switch():
+    def _switch(window=window):
         log._switch.debug("okay, it's time to switch to %s" % window)
-        switch_focus(event, window)
+        wm.focus_on(window)
     prev_handler = loop.call_later(0.15, _switch)
 
 
@@ -238,23 +250,23 @@ def smart_snap(attr, step):
 step = 200
 
 
-@wm.hook(wm.grab_key([mod, shift], right))
+@wm.hook(wm.grab_key([mod, alt], right))
 def expand_width(event):
     smart_snap('width', step)
 
 
-@wm.hook(wm.grab_key([mod, shift], left))
+@wm.hook(wm.grab_key([mod, alt], left))
 def shrink_width(event):
     smart_snap('width', -step)
 
 
-@wm.hook(wm.grab_key([mod, shift], up))
+@wm.hook(wm.grab_key([mod, alt], up))
 def expand_height(event):
     # wm.cur_desktop.cur_focus.resize(dy=-step).warp()
     smart_snap('height', -step)
 
 
-@wm.hook(wm.grab_key([mod, shift], down))
+@wm.hook(wm.grab_key([mod, alt], down))
 def shrink_height(event):
     # wm.cur_desktop.cur_focus.resize(dy=step).warp()
     smart_snap('height', step)
@@ -359,7 +371,7 @@ def hide_window(event):
     # TODO: switch to next window?
 
 
-@wm.hook(wm.grab_key([mod], 'w'))
+@wm.hook(wm.grab_key([mod,shift], 'k'))
 def kill_window(event):
     wm.cur_desktop.cur_focus.kill()
 

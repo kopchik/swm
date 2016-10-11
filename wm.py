@@ -119,11 +119,11 @@ class WM:
         self.root.set_attr(
             eventmask=(
                 EventMask.StructureNotify |
-                EventMask.SubstructureNotify |
-                EventMask.SubstructureRedirect |
+                #                EventMask.SubstructureNotify |
+                #                EventMask.SubstructureRedirect |
                 EventMask.EnterWindow |
-                EventMask.LeaveWindow |
-                EventMask.PropertyChange
+                EventMask.LeaveWindow
+                #                EventMask.PropertyChange
             )
         )
 
@@ -142,7 +142,7 @@ class WM:
         # TODO: set cursor
 
         # EVENTS THAT HAVE LITTLE USE FOR US...
-        self.ignoreEvents = set([
+        self.ignoreEvents = {
             "KeyRelease",
             "ReparentNotify",
             # "CreateNotify",
@@ -153,7 +153,7 @@ class WM:
             "FocusOut",
             "FocusIn",
             "NoExposure",
-        ])
+        }
         # KEYBOARD
         self.kbd = Keyboard(xcb_setup, self._conn)
 
@@ -205,16 +205,21 @@ class WM:
         self.hook.register("ButtonRelease", self.on_mouse_event)
 
     def on_property_notify(self, evname, xcb_event):
-        self.log.error(dir(xcb_event))
-        self.log.error("PropertyNotify: %s" % self.atoms.get_name(xcb_event.atom))
-
+        # TODO: messy ugly code
+        wid = xcb_event.window
+        atom = self.atoms.get_name(xcb_event.atom)
+        #window = self.windows.get(wid, Window(wm=self, wid=wid, mapped=True))
+        self.log.error("PropertyNotify: %s" % atom)
+        run_("xprop -id %s %s" % (wid, atom))
 
     def on_client_message(self, evname, xcb_event):
         self.log.error(dir(xcb_event))
-        self.log.error("client message: %s" % self.atoms.get_name(xcb_event.response_type))
+        self.log.error("client message: %s" %
+                       self.atoms.get_name(xcb_event.response_type))
         # 'bufsize', 'data', 'format', 'pack', 'response_type', 'sequence', 'synthetic', 'type', 'window']
 
     def on_sigchld(self):
+        """ Rip orphans. """
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
@@ -240,15 +245,16 @@ class WM:
             window.focus()
 
     def on_new_window(self, wid):
+        """ Registers new window. """
         window = Window(wm=self, wid=wid, mapped=True)
         # call configuration hood first
-        # to setup attributes like 'on_all_desks'
+        # to setup attributes like 'sticky'
         self.hook.fire("new_window", window)
         self.log.CreateNotify.debug(
             "new window is ready for mapping: %s" % window)
         self.windows[wid] = window
         self.win2desk[window] = self.cur_desktop
-        if window.on_all_desks:
+        if window.sticky:
             for desktop in self.desktops:
                 desktop.add(window)
         else:
@@ -263,10 +269,6 @@ class WM:
             window = Window(wm=self, wid=wid)
             self.log.on_map_notify.notice(window)
             self.log.on_map_notify.notice(window.list_props())
-            if window.name == 'XOSD':
-                # TODO:
-                self.log.debug("raising XOSD...")
-                window.rise()
             return
         window = self.windows[wid]
         window.mapped = True
@@ -391,7 +393,7 @@ class WM:
         """ Focuses on given window. """
         self.cur_desktop.focus_on(window, warp)
 
-    def switch_to(self, desktop):
+    def switch_to(self, desktop: Desktop):
         """ Switches to another desktop. """
         if isinstance(desktop, int):
             desktop = self.desktops[desktop]
@@ -406,9 +408,9 @@ class WM:
         # TODO: move this code to Desktop.show()
         self.root.set_prop('_NET_CURRENT_DESKTOP', desktop.id)
 
-    def relocate_to(self, window, to_desktop):
+    def relocate_to(self, window: Window, to_desktop: Desktop):
         """ Relocates window to a specific desktop. """
-        if window.on_all_desks:
+        if window.sticky:
             self.log.debug(
                 "%s is meant to be on all desktops, cannot relocate to specific one" % window)
             return
@@ -483,7 +485,7 @@ class WM:
             attrs = self._conn.core.GetWindowAttributes(wid).reply()
             # print(attrs, type(attrs))
             if attrs.map_state == xproto.MapState.Unmapped:
-                self.log.scan.debug("window %s is not mapped, skipping" % wid)
+                self.log.scan.debug("window %s is not mapped, skipping" % wid)  # TODO
                 continue
             if wid not in self.windows:
                 self.on_new_window(wid)
@@ -535,6 +537,14 @@ class WM:
 
     def _xpoll(self):
         """ Fetch incomming events (if any) and call hooks. """
+
+        # OK, kids, today I'll teach you how to write reliable enterprise
+        # software! You just catch all the exceptions in the top-level loop
+        # and ignore them. No, I'm kidding, these exceptions are no use
+        # for us because we don't care if a window cannot be drawn or something.
+        # We actually only need to handle just a few events and ignore the rest.
+        # Exceptions happen because of the async nature of X.
+
         while True:
             # TODO: too long try ... catch
             try:
@@ -545,16 +555,10 @@ class WM:
                 if evname.endswith("Event"):
                     evname = evname[:-5]
                 if evname in self.ignoreEvents:
-                    self.log._xpoll.debug("ignoring %s" % xcb_event)
+                    self.log._xpoll.info("ignoring %s" % xcb_event)
                     continue
-                self.log._xpoll.debug("got %s %s" % (evname, xcb_event))
+                self.log._xpoll.critical("got %s %s" % (evname, xcb_event))
                 self.hook.fire(evname, xcb_event)
-            # OK, kids, today I'll teach you how to write reliable enterprise
-            # software! You just catch all the exceptions in the top-level loop
-            # and ignore them. No, I'm kidding, these exceptions are no use
-            # for us because we don't care if a window cannot be drawn or something.
-            # We actually only need to handle just a few events and ignore the rest.
-            # Exceptions happen because of the async nature of X.
             except (WindowError, AccessError, DrawableError):
                 self.log.debug("(minor exception)")
             except Exception as e:

@@ -45,9 +45,10 @@ AttributeMasks = MaskMap(CW)
 
 
 class Window:
-    on_all_desks = False
+    sticky = False
     can_focus = True
     above_all = False
+    mapped = False
 
     def __init__(self, wm, wid, mapped=True, name=None):
         from wm import WM  # TODO: dirtyhack to avoid circular imports
@@ -68,7 +69,7 @@ class Window:
     def show(self):
         self.log.show.debug("showing")
         self._conn.core.MapWindow(self.wid)
-        # self.wm.xsync()  # TODO: is sync needed?
+        self.wm.xsync()
         self.mapped = True
 
     def hide(self):
@@ -102,6 +103,7 @@ class Window:
         # TODO: self.wm.root.set_property("_NET_ACTIVE_WINDOW", self.wid)
         self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
                                       self.wid, xproto.Time.CurrentTime)
+        self.wm.xsync()  # it is here mandatory :(
         return self
 
     def kill(self):
