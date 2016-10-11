@@ -45,6 +45,9 @@ AttributeMasks = MaskMap(CW)
 
 
 class Window:
+    on_all_desks = False
+    can_focus = True
+    above_all = False
 
     def __init__(self, wm, wid, mapped=True, name=None):
         from wm import WM  # TODO: dirtyhack to avoid circular imports
@@ -64,8 +67,8 @@ class Window:
 
     def show(self):
         self.log.show.debug("showing")
-        self._conn.core.MapWindow(self.wid)  # TODO: is sync needed?
-        self.wm.xsync()
+        self._conn.core.MapWindow(self.wid)
+        # self.wm.xsync()  # TODO: is sync needed?
         self.mapped = True
 
     def hide(self):
@@ -74,10 +77,20 @@ class Window:
 
     def rise(self):
         """ Put window on top of others. TODO: what about focus? """
-        mode = xproto.StackMode.Above
-        self._conn.core.ConfigureWindow(self.wid,
-                                        xproto.ConfigWindow.StackMode,
-                                        [mode])
+        return self.stackmode(xproto.StackMode.Above)
+
+    def lower(self):
+        """ Put window on top of others. TODO: what about focus? """
+        return self.stackmode(xproto.StackMode.Below)
+
+    def raiseorlower(self):
+        """ Put window on top of others. TODO: what about focus? """
+        return self.stackmode(xproto.StackMode.Opposite)
+
+    def stackmode(self, mode):
+        return self._conn.core.ConfigureWindow(self.wid,
+                                               xproto.ConfigWindow.StackMode,
+                                               [mode])
 
     def focus(self):
         """ Let window receive mouse and keyboard events.
@@ -85,7 +98,7 @@ class Window:
         """
         if not self.mapped:
             self.show()
-        self.wm.cur_desktop.cur_focus = self
+        #self.wm.cur_desktop.cur_focus = self
         # TODO: self.wm.root.set_property("_NET_ACTIVE_WINDOW", self.wid)
         self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
                                       self.wid, xproto.Time.CurrentTime)
@@ -165,7 +178,6 @@ class Window:
         for prop, typ in to_try:
             name = self.get_prop(prop, typ, unpack=str)
             if name:
-                print("NAME", name)
                 return name
         return "(no name)"
 

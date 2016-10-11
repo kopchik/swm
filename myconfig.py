@@ -9,10 +9,13 @@ from useful.log import Log
 from utils import run_
 from wm import WM
 from desktop import Desktop
+from window import Window
 from myosd import OSD
 from textgui import gui
+import asyncio
 import os.path
 import sys
+
 
 from useful.prettybt import prettybt
 sys.excepthook = prettybt
@@ -32,12 +35,13 @@ osd = OSD()
 
 mod = win
 
+loop = asyncio.new_event_loop()
+# logwidget = gui(loop=loop)
+# Log.file = logwidget
+
 num_desktops = 4
-desktops = [Desktop(name=str(i)) for i in range(num_desktops)]
-wm = WM(desktops=desktops)
-loop = wm._eventloop
-logwidget = gui(loop=wm._eventloop)
-Log.file = logwidget
+desktops = [Desktop(id=i, name=str(i + 1)) for i in range(num_desktops)]
+wm = WM(desktops=desktops, loop=loop)
 
 
 # MOUSE STUFF
@@ -94,12 +98,14 @@ def on_mouse_resize(evhandler, evtype, xcb_ev):
 
 
 # DESKTOP SWITCHING
-cur_desk_idx = 1
+cur_desk_idx = 0
 
 for i in range(1, num_desktops + 1):
     @wm.hook(wm.grab_key([mod], str(i)))
     def switch_to(event, i=i):
-        wm.switch_to(i - 1)
+        cur_desk_idx = i - 1
+        wm.switch_to(cur_desk_idx)
+        osd.write(cur_desk_idx)
 
     @wm.hook(wm.grab_key([shift, mod], str(i)))
     def teleport_window(event, i=i):
@@ -128,19 +134,38 @@ def prev_desktop(event):
     osd.write(cur_desk_idx)
 
 
-# There are a lot of windows created and most of them not supposed
-# to be managed by WM. Thus, this hook is pretty much useless
+# CUSTOMIZE WINDOWS
 @wm.hook("new_window")
-def on_window_create1(event, window):
-    logentry = log.on_window_create.notice
-
-    logentry("#####################")
-    logentry("new window %s" % window)
-    logentry("attributes: %s" % window.list_props())
-    logentry("_____________________")
+def on_window_create(event, window: Window):
+    if window.name in ["dzen title", "XOSD"]:
+        window.on_all_desks = True
+        window.can_focus = False
+        window.above_all = True
 
 prev_handler = None
 
+
+@wm.hook("new_window")
+def print_new_window_props(event, window: Window):
+    logentry = log.on_window_create.notice
+    run_("xprop -id %s" % window.wid)
+    # props = window.list_props()
+    # logentry("#####################")
+    # logentry("new window %s" % window)
+    # # logentry("attributes: %s" % )
+    # unknown_props = []
+    # for prop in props:
+    #     try:
+    #         value = window.get_prop(prop, unpack=str)
+    #     except ValueError:
+    #         unknown_props.append(prop)
+    #     logentry("%s: %s" % (prop,value))
+    # logentry("unknown props %s" % unknown_props)
+    # logentry("_____________________")
+
+@wm.hook("unknown_window")
+def unknown_window(event, wid):
+    run_("xprop -id %s" % wid)
 
 @wm.hook("window_enter")
 def on_window_enter(event, window):
@@ -267,6 +292,10 @@ def move_down(event):
 
 
 # FOCUS
+def cycle_from(l, pos):
+    from itertools import chain
+    for e in chain(l[pos + 1:], l[:pos]):
+        yield e
 
 
 @wm.hook(wm.grab_key([alt], tab))
@@ -274,10 +303,12 @@ def next_window(event):
     desktop = wm.cur_desktop
     cur = desktop.cur_focus
     cur_idx = desktop.windows.index(cur)
-    nxt = desktop.windows[cur_idx - 1]
-    if nxt == wm.root:  # TODO: dirty hack because switch_focus does not switch to root
-        nxt = desktop.windows[cur_idx - 2]
-    switch_focus("some_fake_ev", nxt, warp=True)
+    for window in cycle_from(desktop.windows, cur_idx):
+        if window == wm.root:  # TODO: dirty hack because switch_focus does not switch to root
+            continue
+        if not window.can_focus:
+            continue
+        switch_focus("some_fake_ev", window, warp=True)
 
 
 @wm.hook(wm.grab_key([mod], 'n'))
@@ -333,6 +364,17 @@ def kill_window(event):
     wm.cur_desktop.cur_focus.kill()
 
 
+@wm.hook(wm.grab_key([mod], 'o'))
+def osd_test(event):
+    osd.write("OSD test output")
+
+
+@wm.hook(wm.grab_key([mod], 'e'))
+def log_print_separator(event):
+    log.notice('========')
+    log.notice("        ")
+
+
 @wm.hook(wm.grab_key([mod], 's'))
 def status(event):
     root = wm.root
@@ -365,7 +407,11 @@ def on_exit(*args, **kwargs):
     for window in wm.windows.values():
         window.show()
 
+# set background
 run_("xsetroot -solid Teal")
+# replace default X-shaped cursor with something more suitable
+run_("xsetroot -cursor_name left_ptr")
+
 
 # DO NOT PUT ANY CONFIGURATION BELOW THIS LINE
 # because wm.loop is blocking.

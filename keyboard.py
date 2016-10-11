@@ -29,5 +29,5 @@ class Keyboard:
     def key_to_code(self, key):
         assert key in keysyms, "unknown key"  # TODO: generate warning
         sym = keysyms[key]
-        self.log(sorted(self.first_sym_to_code))
+        # self.log(sorted(self.first_sym_to_code))
         return self.first_sym_to_code[sym]

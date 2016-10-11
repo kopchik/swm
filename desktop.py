@@ -4,7 +4,8 @@ from useful.log import Log
 class Desktop:
     """ Support for virtual desktops. """
 
-    def __init__(self, windows=None, name=None):
+    def __init__(self, id, windows=None, name=None):
+        self.id = id
         if not name:
             name = "(desktop %s)" % id(self)
         self.log = Log("desktop %s" % name)
@@ -15,7 +16,7 @@ class Desktop:
         self.cur_focus = None
         self.prev_focus = None
         self.were_mapped = []
-        self.hidden = True
+        self.hidden = True  # TODO: rename to active
 
     def show(self):
         self.hidden = False
@@ -25,8 +26,11 @@ class Desktop:
         else:
             self.log.debug("no windows on this desktop to show")
         self.were_mapped.clear()
+
         if self.cur_focus:
             self.cur_focus.focus()
+
+        # TODO: self.wm.root.set_prop('_NET_CURRENT_DESKTOP', self.id)
 
     def hide(self):
         self.hidden = True
@@ -61,6 +65,8 @@ class Desktop:
     def focus_on(self, window, warp=False):
         assert window in self.windows, "window %s is not on current desktop" % window
         assert not self.hidden, "cannot focus while desktop is hidden"
+        # if self.cur_focus:
+        #     self.cur_focus.lower()
         # Achtung! Order here is very important or focus will now work
         # correctly
         window.rise()

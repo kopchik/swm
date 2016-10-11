@@ -86,7 +86,7 @@ class WM:
     root = None   # type: Window
     atoms = None  # type: AtomCache
 
-    def __init__(self, display=None, desktops=None):
+    def __init__(self, display=None, desktops=None, loop=None):
         self.log = Log("WM")
         # INIT SOME BASIC STUFF
         self.hook = Hook()
@@ -136,6 +136,8 @@ class WM:
         supporting_wm_check_window.set_prop('_NET_WM_NAME', "SWM")
         self.root.set_prop('_NET_SUPPORTING_WM_CHECK',
                            supporting_wm_check_window.wid)
+        self.root.set_prop('_NET_NUMBER_OF_DESKTOPS', len(self.desktops))
+        self.root.set_prop('_NET_CURRENT_DESKTOP', 0)
 
         # TODO: set cursor
 
@@ -173,9 +175,12 @@ class WM:
         # TODO: self.update_net_desktops()
 
         # SETUP EVENT LOOP
-        self._eventloop = asyncio.new_event_loop()
+        if not loop:
+            loop = asyncio.new_event_loop()
+        self._eventloop = loop
         self._eventloop.add_signal_handler(signal.SIGINT, self.stop)
         self._eventloop.add_signal_handler(signal.SIGTERM, self.stop)
+        self._eventloop.add_signal_handler(signal.SIGCHLD, self.on_sigchld)
         self._eventloop.set_exception_handler(
             lambda loop, ctx: self.log.error(
                 "Got an exception in {}: {}".format(loop, ctx))
@@ -190,12 +195,35 @@ class WM:
         self.hook.register("KeyPress", self.on_key_press)
         # self.hook.register("KeyRelease", self.on_key_release)
         # self.hook.register("CreateNotify", self.on_window_create)
+        self.hook.register("PropertyNotify", self.on_property_notify)
+        self.hook.register("ClientMessage", self.on_client_message)
         self.hook.register("DestroyNotify", self.on_window_destroy)
         self.hook.register("EnterNotify", self.on_window_enter)
         self.hook.register("ConfigureRequest", self.on_configure_window)
         self.hook.register("MotionNotify", self.on_mouse_event)
         self.hook.register("ButtonPress", self.on_mouse_event)
         self.hook.register("ButtonRelease", self.on_mouse_event)
+
+    def on_property_notify(self, evname, xcb_event):
+        self.log.error(dir(xcb_event))
+        self.log.error("PropertyNotify: %s" % self.atoms.get_name(xcb_event.atom))
+
+
+    def on_client_message(self, evname, xcb_event):
+        self.log.error(dir(xcb_event))
+        self.log.error("client message: %s" % self.atoms.get_name(xcb_event.response_type))
+        # 'bufsize', 'data', 'format', 'pack', 'response_type', 'sequence', 'synthetic', 'type', 'window']
+
+    def on_sigchld(self):
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+                if (pid, status) == (0, 0):
+                    # no child to rip
+                    break
+                self.log.notice("ripped child PID=%s" % pid)
+            except ChildProcessError:
+                break
 
     def on_map_request(self, evname, xcb_event):
         """ Map request is a request to draw the window on screen. """
@@ -204,29 +232,41 @@ class WM:
             window = self.on_new_window(wid)
         else:
             window = self.windows[wid]
-            self.log.CreateNotify.debug("map request for %s" % window)
+            self.log.on_map_request.debug("map request for %s" % window)
         window.show()
-        window.focus()
+        if window.above_all:
+            window.rise()
+        if window.can_focus:
+            window.focus()
 
     def on_new_window(self, wid):
         window = Window(wm=self, wid=wid, mapped=True)
+        # call configuration hood first
+        # to setup attributes like 'on_all_desks'
+        self.hook.fire("new_window", window)
         self.log.CreateNotify.debug(
-            "new window for ready for mapping: %s" % window)
+            "new window is ready for mapping: %s" % window)
         self.windows[wid] = window
         self.win2desk[window] = self.cur_desktop
-        if window.name == "dzen title":
-            self.log.notice("dzen is to be shown on all windows!")
+        if window.on_all_desks:
             for desktop in self.desktops:
                 desktop.add(window)
         else:
             self.cur_desktop.windows.append(window)
-        self.hook.fire("new_window", window)
         return window
 
     def on_map_notify(self, evname, xcb_event):
         wid = xcb_event.window
         if wid not in self.windows:
             # window is managed by the application, not by us
+            # TODO: debug:
+            window = Window(wm=self, wid=wid)
+            self.log.on_map_notify.notice(window)
+            self.log.on_map_notify.notice(window.list_props())
+            if window.name == 'XOSD':
+                # TODO:
+                self.log.debug("raising XOSD...")
+                window.rise()
             return
         window = self.windows[wid]
         window.mapped = True
@@ -244,6 +284,7 @@ class WM:
         wid = xcb_event.window
         if wid not in self.windows:
             return
+
         window = self.windows[wid]
         assert isinstance(window, Window), "it's not a window: %s (%s)" % (
             window, type(window))
@@ -251,14 +292,19 @@ class WM:
         for desktop in self.desktops:
             try:
                 desktop.windows.remove(window)
-                print("%s removed from %s" % (self, desktop))
+                self.log.debug("%s removed from %s" % (self, desktop))
             except ValueError:
                 pass
         del self.windows[wid]
-        del self.win2desk[window]
+        if window in self.win2desk:
+            del self.win2desk[window]
 
     def on_window_enter(self, evname, xcb_event):
         wid = xcb_event.event
+        if wid not in self.windows:
+            self.log.on_window_enter.error("no window with wid=%s" % wid)
+            self.hook.fire("unknown_window", wid)
+            return
         window = self.windows[wid]
         self.log.on_window_enter("window_enter: %s %s" % (wid, window))
         self.hook.fire("window_enter", window)
@@ -336,14 +382,17 @@ class WM:
         return event
 
     def hotkey(self, keys, cmd):
+        """ Setup hook to launch a command on specific hotkeys. """
         @self.hook(self.grab_key(*keys))
         def cb(event):
             run_(cmd)
 
     def focus_on(self, window, warp=False):
+        """ Focuses on given window. """
         self.cur_desktop.focus_on(window, warp)
 
     def switch_to(self, desktop):
+        """ Switches to another desktop. """
         if isinstance(desktop, int):
             desktop = self.desktops[desktop]
         if self.cur_desktop == desktop:
@@ -354,8 +403,16 @@ class WM:
         self.cur_desktop.hide()
         self.cur_desktop = desktop
         self.cur_desktop.show()
+        # TODO: move this code to Desktop.show()
+        self.root.set_prop('_NET_CURRENT_DESKTOP', desktop.id)
 
     def relocate_to(self, window, to_desktop):
+        """ Relocates window to a specific desktop. """
+        if window.on_all_desks:
+            self.log.debug(
+                "%s is meant to be on all desktops, cannot relocate to specific one" % window)
+            return
+
         from_desktop = self.cur_desktop
 
         if from_desktop == to_desktop:
@@ -429,9 +486,7 @@ class WM:
                 self.log.scan.debug("window %s is not mapped, skipping" % wid)
                 continue
             if wid not in self.windows:
-                window = Window(wid=wid, wm=self, mapped=True)
-                self.windows[wid] = window
-                self.cur_desktop.windows.append(window)
+                self.on_new_window(wid)
         self.log.scan.info("the following windows are active: %s" %
                            sorted(self.windows.values()))
 
@@ -451,13 +506,17 @@ class WM:
         # serviced in order.
         self._conn.core.GetInputFocus().reply()
 
-    def stop(self):
+    def stop(self, xserver_dead=False):
         """ Stop WM to quit. """
         self.hook.fire("on_exit")
         # display all hidden windows
-        for window in self.windows.values():
-            window.show()
-        self.xsync()
+        try:
+            if not xserver_dead:
+                for window in self.windows.values():
+                    window.show()
+                self.xsync()
+        except Exception as err:
+            self.log.stop.error("error on stop: %s" % err)
         self.log.stop.debug("stopping event loop")
         self._eventloop.stop()
 
@@ -488,7 +547,7 @@ class WM:
                 if evname in self.ignoreEvents:
                     self.log._xpoll.debug("ignoring %s" % xcb_event)
                     continue
-                self.log._xpoll.debug("got %s" % evname)
+                self.log._xpoll.debug("got %s %s" % (evname, xcb_event))
                 self.hook.fire(evname, xcb_event)
             # OK, kids, today I'll teach you how to write reliable enterprise
             # software! You just catch all the exceptions in the top-level loop
@@ -499,12 +558,12 @@ class WM:
             except (WindowError, AccessError, DrawableError):
                 self.log.debug("(minor exception)")
             except Exception as e:
+                self.log._xpoll.error(traceback.format_exc())
                 error_code = self._conn.has_error()
                 if error_code:
                     error_string = XCB_CONN_ERRORS[error_code]
                     self.log.critical("Shutting down due to X connection error %s (%s)" %
                                       (error_string, error_code))
-                    self.stop()
+                    self.stop(xserver_dead=True)
                     break
-                self.log.error(traceback.format_exc())
         self.flush()  # xcb often doesn't flush implicitly
