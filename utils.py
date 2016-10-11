@@ -31,5 +31,5 @@ def get_modmask(modifiers):
 
 
 def cycle_from(l, pos):
-    for e in chain(l[pos+1:], l[:pos]):
+    for e in chain(l[pos + 1:], l[:pos]):
         yield e

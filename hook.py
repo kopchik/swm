@@ -43,8 +43,9 @@ class Hook:
         return Context()
 
     def fire(self, event, *args, **kwargs):
+        self.log.debug("{} {} {}".format(event, args, kwargs))
         if event not in self.cb_map:
-            self.log.notice("no handler for %s" % event)
+            self.log.notice("no handler for {}".format(event))
             return
 
         if event in self.suppressed:

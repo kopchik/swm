@@ -118,12 +118,12 @@ class WM:
 
         self.root.set_attr(
             eventmask=(
-                EventMask.StructureNotify |
-                #                EventMask.SubstructureNotify |
-                #                EventMask.SubstructureRedirect |
-                EventMask.EnterWindow |
-                EventMask.LeaveWindow
-                #                EventMask.PropertyChange
+                EventMask.StructureNotify
+                | EventMask.SubstructureNotify
+                # | EventMask.SubstructureRedirect
+                | EventMask.EnterWindow
+                # | EventMask.LeaveWindow
+                # | EventMask.PropertyChange
             )
         )
 
@@ -169,8 +169,8 @@ class WM:
 
         # GET LIST OF ALL PRESENT WINDOWS AND FOCUS ON THE LAST
         self.scan()     #
-        window_to_focus = sorted(self.windows.values())[-1].focus()
-        self.cur_desktop.focus_on(window_to_focus, warp=True)
+        # window_to_focus = sorted(self.windows.values())[-1].focus()
+        # self.cur_desktop.focus_on(window_to_focus, warp=True)
 
         # TODO: self.update_net_desktops()
 
@@ -436,7 +436,7 @@ class WM:
         else:
             button = xcb_event.detail
 
-        event = ("on_mouse", modmask, button)
+        event = ('on_mouse', modmask, button)
         # print(event)
         self.hook.fire(event, evname, xcb_event)
 
@@ -485,7 +485,8 @@ class WM:
             attrs = self._conn.core.GetWindowAttributes(wid).reply()
             # print(attrs, type(attrs))
             if attrs.map_state == xproto.MapState.Unmapped:
-                self.log.scan.debug("window %s is not mapped, skipping" % wid)  # TODO
+                self.log.scan.debug(
+                    "window %s is not mapped, skipping" % wid)  # TODO
                 continue
             if wid not in self.windows:
                 self.on_new_window(wid)

@@ -70,7 +70,7 @@ class Desktop:
         # Achtung! Order here is very important or focus will now work
         # correctly
         self.log("focusing on %s" % window)
-        #window.show()
+        # window.show()
         window.rise()
         window.focus()
         if warp:

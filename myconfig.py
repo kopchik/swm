@@ -34,7 +34,7 @@ MouseR = 3
 log = Log("USER HOOKS")
 osd = OSD()
 
-mod = win
+mod = ctrl
 
 # PRE-INIT
 # switch to english just in case
@@ -171,9 +171,11 @@ def print_new_window_props(event, window: Window):
     # logentry("unknown props %s" % unknown_props)
     # logentry("_____________________")
 
+
 @wm.hook("unknown_window")
 def unknown_window(event, wid):
     run_("xprop -id %s" % wid)
+
 
 @wm.hook("window_enter")
 def on_window_enter(event, window):
@@ -183,7 +185,7 @@ def on_window_enter(event, window):
         prev_handler.cancel()
 
     if window == wm.root:
-      return
+        return
 
     log._switch.debug("delaying activation of %s" % window)
 
@@ -337,6 +339,7 @@ def prev_window(event):
 # SPAWN
 # terminals, etc
 wm.hotkey(([mod], 'x'), 'urxvtcd -rv -fade 50 -fn "xft:Terminus:size=16" -fb "xft:Terminus:bold:size=16" -sl 10000 -si -tn xterm')
+wm.hotkey(([mod], 'y'), 'xterm')
 wm.hotkey(([mod], 'd'), "dmenu_run")
 wm.hotkey(([mod], 'l'), "mylock")
 # kbd layout
@@ -371,7 +374,7 @@ def hide_window(event):
     # TODO: switch to next window?
 
 
-@wm.hook(wm.grab_key([mod,shift], 'k'))
+@wm.hook(wm.grab_key([mod, shift], 'k'))
 def kill_window(event):
     wm.cur_desktop.cur_focus.kill()
 
