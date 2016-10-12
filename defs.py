@@ -2,6 +2,8 @@
 Just some definitions and commonly used mappings.
 """
 
+ATOM = 'ATOM'
+
 # replace long ugly property names with something short and nice
 # http://standards.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870830002400
 WINDOW_TYPES = {
@@ -23,11 +25,13 @@ WINDOW_TYPES = {
 
 
 PROPERTYMAP = {
+    "WM_LOCALE_NAME": ("STRING", 8),
     # ewmh properties
     "_NET_DESKTOP_GEOMETRY": ("CARDINAL", 32),
     "_NET_SUPPORTED": ("ATOM", 32),
     "_NET_SUPPORTING_WM_CHECK": ("WINDOW", 32),
     "_NET_WM_NAME": ("UTF8_STRING", 8),
+    '_NET_WM_VISIBLE_NAME': ("UTF8_STRING", 8),
     "_NET_WM_PID": ("CARDINAL", 32),
     "_NET_CLIENT_LIST": ("WINDOW", 32),
     "_NET_CLIENT_LIST_STACKING": ("WINDOW", 32),
@@ -40,7 +44,7 @@ PROPERTYMAP = {
     "_NET_WM_STRUT": ("CARDINAL", 32),
     "_NET_WM_STRUT_PARTIAL": ("CARDINAL", 32),
     "_NET_WM_WINDOW_OPACITY": ("CARDINAL", 32),
-    "_NET_WM_WINDOW_TYPE": ("CARDINAL", 32),
+    "_NET_WM_WINDOW_TYPE": (ATOM, 32),
     # Net State
     "_NET_WM_STATE": ("ATOM", 32),
     "_NET_WM_STATE_STICKY": ("ATOM", 32),
@@ -93,6 +97,7 @@ SUPPORTED_ATOMS = [
     '_NET_WM_PID',
 ]
 
+# TODO: use xproto.KeyButMask
 ModMasks = {
     "shift": 1 << 0,
     "lock": 1 << 1,
@@ -114,3 +119,15 @@ ModMapOrder = [
     "mod4",
     "mod5"
 ]
+
+HintsFlags = {
+    "InputHint": 1,          # input
+    "StateHint": 2,          # initial_state
+    "IconPixmapHint": 4,     # icon_pixmap
+    "IconWindowHint": 8,     # icon_window
+    "IconPositionHint": 16,  # icon_x & icon_y
+    "IconMaskHint": 32,      # icon_mask
+    "WindowGroupHint": 64,   # window_group
+    "MessageHint": 128,      # (this bit is obsolete)
+    "UrgencyHint": 256,      # urgency
+}

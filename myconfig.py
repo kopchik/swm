@@ -98,11 +98,11 @@ def on_mouse_resize(evhandler, evtype, xcb_ev):
         orig_pos = None
         orig_geometry = None
     elif evtype == "MotionNotify":
-        dx = cur_pos[0] - orig_pos[0]
-        dy = cur_pos[1] - orig_pos[1]
-        # x = max(0, orig_geometry[0] + dx)
-        # y = max(0, orig_geometry[1] + dy)
-        window.resize(dx=dx, dy=dy)
+        dw = cur_pos[0] - orig_pos[0]
+        dh = cur_pos[1] - orig_pos[1]
+        width = max(0, orig_geometry[2] + dw)
+        height = max(0, orig_geometry[3] + dh)
+        window.resize(x=width, y=height)
 
 
 # DESKTOP SWITCHING
@@ -150,6 +150,8 @@ def on_window_create(event, window: Window):
         window.can_focus = False
         window.above_all = True
         # log.critical("PANEL!")
+    if window.type in ["dropdown", "menu", "notification", "tooltip"]:
+        window.can_focus = False
 prev_handler = None
 
 
@@ -174,11 +176,16 @@ def on_window_enter(event, window):
     if window == wm.root:
         return
 
+    if window == wm.cur_desktop.cur_focus:
+        log.notice("we do not focus on the same window {}".format(window))
+        return
+
     log._switch.debug("delaying activation of %s" % window)
 
     def _switch(window=window):
         log._switch.debug("okay, it's time to switch to %s" % window)
         wm.focus_on(window)
+        window.rise()
     prev_handler = loop.call_later(0.15, _switch)
 
 
@@ -232,7 +239,7 @@ def smart_snap(attr, step):
         cur = x
         snap = snap_to(cur, step, vstart + vstop)
         window.set_geometry(x=snap)
-    window.warp()
+    return snap
 
 
 # RESIZE
@@ -278,6 +285,8 @@ def move_right(event):
 def move_left(event):
     # wm.cur_desktop.cur_focus.move(dx=-step).warp()
     smart_snap('x', -step)
+    # wm.mouse.move(dx=-snap)
+    # wm.xsync()
 
 
 @wm.hook(wm.grab_key([alt], up))
@@ -299,26 +308,35 @@ def cycle_from(l, pos):
         yield e
 
 
-@wm.hook(wm.grab_key([alt], tab))
-def next_window(event):
+def find_next(inc=1):
     desktop = wm.cur_desktop
-    windows = desktop.windows
+    windows = desktop.windows  # type: List[Window]
     cur = desktop.cur_focus
     idx = windows.index(cur)
     tot = len(windows)
-    nxt = windows[(idx - 1) % tot]
-    wm.focus_on(nxt, warp=True)
+    for i in range(tot):
+        idx -= inc
+        window = windows[idx % tot]
+        if not window.can_focus:
+            continue
+        return window
+    return None
+
+
+@wm.hook(wm.grab_key([alt], tab))
+def next_window(event):
+    window = find_next()
+    if window:
+        wm.focus_on(window, warp=False)
+        window.rise()
 
 
 @wm.hook(wm.grab_key([mod], 'n'))
 def prev_window(event):
-    desktop = wm.cur_desktop
-    windows = desktop.windows
-    cur = desktop.cur_focus
-    idx = windows.index(cur)
-    tot = len(windows)
-    nxt = windows[(idx + 1) % tot]
-    wm.focus_on(nxt, warp=True)
+    window = find_next(-1)
+    if window:
+        wm.focus_on(window, warp=False)
+        window.rise()
 
 
 # SPAWN
@@ -330,7 +348,7 @@ wm.hotkey(([mod], 'l'), "mylock")
 # kbd layout
 wm.hotkey(([], caps), "setxkbmap -layout us")
 wm.hotkey(([shift], caps), "setxkbmap -layout ru")
-# volume
+# volumeal
 wm.hotkey(([mod], 'period'), "sound_volume up")
 wm.hotkey(([mod], 'comma'), "sound_volume down")
 # brightness
@@ -356,7 +374,7 @@ def hide_window(event):
     cur = desktop.cur_focus
     # cur_idx = windows.index(cur)
     cur.hide()
-    # TODO: switch to next window?
+    next_window()
 
 
 @wm.hook(wm.grab_key([mod, shift], 'k'))
@@ -383,7 +401,7 @@ def status(event):
         root=root, focus=focus))
     for wid in sorted(wm.windows):
         window = wm.windows[wid]
-        log.status.debug("{wid:<10} {window.name:<20} {window.mapped:<10}".format(
+        log.status.debug("{wid:<10} {window.name:<20} {window.mapped:<10} {window.can_focus} {window.type}".format(
             wid=wid, window=window))
 
 # restore windows, otherwise they will stay invisible

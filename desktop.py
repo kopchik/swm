@@ -62,7 +62,7 @@ class Desktop:
         if window == self.cur_focus:
             self.cur_focus = None
 
-    def focus_on(self, window, warp=True):
+    def focus_on(self, window, warp=False):
         assert window in self.windows, "window %s is not on current desktop" % window
         assert not self.hidden, "cannot focus while desktop is hidden"
         # if self.cur_focus:
@@ -70,11 +70,12 @@ class Desktop:
         # Achtung! Order here is very important or focus will now work
         # correctly
         self.log("focusing on %s" % window)
-        # window.show()
-        window.rise()
-        window.focus()
         if warp:
+            window.show()
+            window.rise()
             window.warp()
+        window.focus()
+
         self.cur_focus = window
 
     def __repr__(self):

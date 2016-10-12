@@ -2,6 +2,7 @@ from defs import XCB_CONN_ERRORS, SUPPORTED_ATOMS
 from window import Window
 from desktop import Desktop
 from keyboard import Keyboard
+from mouse import Mouse
 from utils import run_, get_modmask
 from hook import Hook
 
@@ -111,7 +112,7 @@ class WM:
         xcb_screens = [i for i in xcb_setup.roots]
         self.xcb_default_screen = xcb_screens[self._conn.pref_screen]
         root_wid = self.xcb_default_screen.root
-        self.root = Window(self, root_wid, name="root", mapped=True)
+        self.root = Window(self, root_wid, mapped=True)
         self.windows[root_wid] = self.root
 #        for desktop in self.desktops:
 #            desktop.windows.append(self.root)
@@ -120,10 +121,12 @@ class WM:
             eventmask=(
                 EventMask.StructureNotify
                 | EventMask.SubstructureNotify
+                | EventMask.FocusChange
                 # | EventMask.SubstructureRedirect
                 | EventMask.EnterWindow
                 # | EventMask.LeaveWindow
                 # | EventMask.PropertyChange
+                | EventMask.OwnerGrabButton
             )
         )
 
@@ -156,6 +159,7 @@ class WM:
         }
         # KEYBOARD
         self.kbd = Keyboard(xcb_setup, self._conn)
+        self.mouse = Mouse(conn=self._conn, root=self.root)
 
         # FLUSH XCB BUFFER
         self.xsync()    # apply settings
@@ -259,7 +263,6 @@ class WM:
         self.windows[wid] = window
         self.win2desk[window] = self.cur_desktop
         if window.sticky:
-            self.log.on_new_window.error("window is sticky!")
             for desktop in self.desktops:
                 desktop.add(window)
         else:
@@ -311,11 +314,11 @@ class WM:
     def on_window_enter(self, evname, xcb_event):
         wid = xcb_event.event
         if wid not in self.windows:
-            self.log.on_window_enter.error("no window with wid=%s" % wid)
+            #self.log.on_window_enter.error("no window with wid=%s" % wid)
             self.hook.fire("unknown_window", wid)
             return
         window = self.windows[wid]
-        self.log.on_window_enter("window_enter: %s %s" % (wid, window))
+        #self.log.on_window_enter("window_enter: %s %s" % (wid, window))
         self.hook.fire("window_enter", window)
 
     def grab_key(self, modifiers, key, owner_events=False, window=None):
@@ -502,10 +505,11 @@ class WM:
                            sorted(self.windows.values()))
 
         if focus:
-            window_to_focus = sorted(self.windows.values())[-1].focus()
-            if window_to_focus:
+            windows = sorted(self.windows.values())
+            windows = list(filter(lambda w: w!=self.root, windows))
+            if windows:
                 # on empty desktop there is nothing to focus on
-                self.cur_desktop.focus_on(window_to_focus, warp=True)
+                self.cur_desktop.focus_on(windows[-1], warp=True)
 
 
     def finalize(self):
