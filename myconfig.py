@@ -149,33 +149,20 @@ def on_window_create(event, window: Window):
         window.sticky = True
         window.can_focus = False
         window.above_all = True
-
+        # log.critical("PANEL!")
 prev_handler = None
 
 
 @wm.hook("new_window")
 def print_new_window_props(event, window: Window):
-    logentry = log.on_window_create.notice
     run_("xprop -id %s" % window.wid)
-    # props = window.list_props()
-    # logentry("#####################")
-    # logentry("new window %s" % window)
-    # # logentry("attributes: %s" % )
-    # unknown_props = []
-    # for prop in props:
-    #     try:
-    #         value = window.get_prop(prop, unpack=str)
-    #     except ValueError:
-    #         unknown_props.append(prop)
-    #     logentry("%s: %s" % (prop,value))
-    # logentry("unknown props %s" % unknown_props)
-    # logentry("_____________________")
 
 
+# TODO: dirty hack, WM should not have unknown windows
 @wm.hook("unknown_window")
 def unknown_window(event, wid):
     run_("xprop -id %s" % wid)
-
+    wm.on_new_window(wid)
 
 @wm.hook("window_enter")
 def on_window_enter(event, window):

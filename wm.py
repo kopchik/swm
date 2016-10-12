@@ -167,13 +167,6 @@ class WM:
         # NOW IT'S TIME TO GET PHYSICAL SCREEN CONFIGURATION
         self.xrandr = Xrandr(root=self.root, conn=self._conn)
 
-        # GET LIST OF ALL PRESENT WINDOWS AND FOCUS ON THE LAST
-        self.scan()     #
-        window_to_focus = sorted(self.windows.values())[-1].focus()
-        if window_to_focus:
-            # on empty desktop there is nothing to focus on
-            self.cur_desktop.focus_on(window_to_focus, warp=True)
-
         # TODO: self.update_net_desktops()
 
         # SETUP EVENT LOOP
@@ -214,11 +207,20 @@ class WM:
         self.log.error("PropertyNotify: %s" % atom)
         run_("xprop -id %s %s" % (wid, atom))
 
+    # TODO: dirty code, relocate to config
     def on_client_message(self, evname, xcb_event):
         self.log.error(dir(xcb_event))
-        self.log.error("client message: %s" %
-                       self.atoms.get_name(xcb_event.response_type))
+        data = xcb_event.data
+        resp_type = self.atoms.get_name(xcb_event.response_type)
+        type = self.atoms.get_name(xcb_event.type)
+        wid = xcb_event.window
+        self.log.error("client message: resp_type={resp_type} window={wid} type={type} data={data}".format(**locals()))
         # 'bufsize', 'data', 'format', 'pack', 'response_type', 'sequence', 'synthetic', 'type', 'window']
+
+        if type == '_NET_ACTIVE_WINDOW':
+            window = self.windows[wid]
+            window.rise()
+            self.focus_on(window)
 
     def on_sigchld(self):
         """ Rip orphans. """
@@ -252,11 +254,12 @@ class WM:
         # call configuration hood first
         # to setup attributes like 'sticky'
         self.hook.fire("new_window", window)
-        self.log.CreateNotify.debug(
-            "new window is ready for mapping: %s" % window)
+        self.log.on_new_window.debug(
+            "new window is ready: %s" % window)
         self.windows[wid] = window
         self.win2desk[window] = self.cur_desktop
         if window.sticky:
+            self.log.on_new_window.error("window is sticky!")
             for desktop in self.desktops:
                 desktop.add(window)
         else:
@@ -266,14 +269,16 @@ class WM:
     def on_map_notify(self, evname, xcb_event):
         wid = xcb_event.window
         if wid not in self.windows:
-            # window is managed by the application, not by us
-            # TODO: debug:
-            window = Window(wm=self, wid=wid)
-            self.log.on_map_notify.notice(window)
-            self.log.on_map_notify.notice(window.list_props())
-            return
-        window = self.windows[wid]
+            window = self.on_new_window(wid)
+        else:
+            window = self.windows[wid]
         window.mapped = True
+
+        if window.above_all:
+            window.rise()
+        # if window.can_focus:
+        #     window.focus()
+
         self.log.on_map_notify.debug("map notify for %s" % window)
 
     def on_window_unmap(self, evname, xcb_event):
@@ -394,6 +399,7 @@ class WM:
     def focus_on(self, window, warp=False):
         """ Focuses on given window. """
         self.cur_desktop.focus_on(window, warp)
+        self.root.set_prop('_NET_ACTIVE_WINDOW', window.wid)
 
     def switch_to(self, desktop: Desktop):
         """ Switches to another desktop. """
@@ -479,7 +485,7 @@ class WM:
         )
         return Window(self, wid)
 
-    def scan(self):
+    def scan(self, focus=True):
         """ Gets all windows in the system. """
         self.log.debug("performing scan of all mapped windows")
         q = self._conn.core.QueryTree(self.root.wid).reply()
@@ -494,6 +500,13 @@ class WM:
                 self.on_new_window(wid)
         self.log.scan.info("the following windows are active: %s" %
                            sorted(self.windows.values()))
+
+        if focus:
+            window_to_focus = sorted(self.windows.values())[-1].focus()
+            if window_to_focus:
+                # on empty desktop there is nothing to focus on
+                self.cur_desktop.focus_on(window_to_focus, warp=True)
+
 
     def finalize(self):
         """ This code is run when event loop is terminated. """
@@ -533,6 +546,7 @@ class WM:
 
     def loop(self):
         """ DITTO """
+        self.scan()
         try:
             self._eventloop.run_forever()
         finally:
