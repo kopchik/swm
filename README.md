@@ -40,3 +40,5 @@ struct.error: argument out of range
 2016/10/11 23:06:46 hook.debug: ClientMessage (<xcffib.xproto.ClientMessageEvent object at 0x7f4f884dc6d8>,) {}
 2016/10/11 23:06:46 WM.error: ['__class__', '__delattr__', '__dict__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__', '__getattribute__', '__gt__', '__hash__', '__init__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', '__weakref__', 'bufsize', 'data', 'format', 'pack', 'response_type', 'sequence', 'synthetic', 'type', 'window']
 2016/10/11 23:06:46 WM.error: client message: Super
+#
+_NET_ACTIVE_WINDOW

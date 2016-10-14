@@ -303,13 +303,13 @@ class Window:
         return [self.wm.atoms.get_name(atom) for atom in atoms]
 
     def update_window_type(self):
-        raw_types = self.props['_NET_WM_WINDOW_TYPE']
-        if not raw_types:
+        window_types = self.props['_NET_WM_WINDOW_TYPE']
+        if not types:
             self.skip = True
 
-        for raw_type in raw_types:
-            if raw_type in WINDOW_TYPES:
-                self.type = WINDOW_TYPES[raw_type]
+        for atom in window_types:
+            if atom.name in WINDOW_TYPES:
+                self.type = WINDOW_TYPES[raw_type.name]
                 break
         else:
             self.type = "normal"

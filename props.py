@@ -68,7 +68,7 @@ class Props:
             xproto.PropMode.Replace,
             wid,
             prop.id,
-            prop.rawtype.
+            prop.rawtype,
             type_fmt,  # Format - 8, 16, 32
             len(value),
             value

@@ -51,7 +51,10 @@ class AtomVault:
 
     def __getattr__(self, name: str):
         if name not in self._atoms:
-            type = PROPERTYMAP[name]
+            try:
+                type = PROPERTYMAP[name]
+            except KeyError:
+                raise Exception("unknown atom/property %s, please add it into PROPERTYMAP" % name)
             id = self.get_id(name)
             rawtype = self.get_id(type[0])
             atom = Atom(name, id, type, rawtype)

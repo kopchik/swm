@@ -24,6 +24,7 @@ WINDOW_TYPES = {
     '_NET_WM_WINDOW_TYPE_NORMAL': "normal",
 }
 
+window_types_propmap = {k:(ATOM, 32) for k in WINDOW_TYPES}
 
 PROPERTYMAP = {
     "WM_LOCALE_NAME": ("STRING", 8),
@@ -66,6 +67,7 @@ PROPERTYMAP = {
     # Qtile-specific properties
     "QTILE_INTERNAL": (CARDINAL, 32)
 }
+PROPERTYMAP.update(window_types_propmap)
 
 
 XCB_CONN_ERRORS = {
