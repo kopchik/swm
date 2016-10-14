@@ -3,6 +3,7 @@ Just some definitions and commonly used mappings.
 """
 
 ATOM = 'ATOM'
+CARDINAL = 'CARDINAL'
 
 # replace long ugly property names with something short and nice
 # http://standards.freedesktop.org/wm-spec/latest/ar01s05.html#idm139870830002400
@@ -26,24 +27,25 @@ WINDOW_TYPES = {
 
 PROPERTYMAP = {
     "WM_LOCALE_NAME": ("STRING", 8),
+    "WM_NAME": ("STRING", 8),
     # ewmh properties
-    "_NET_DESKTOP_GEOMETRY": ("CARDINAL", 32),
+    "_NET_DESKTOP_GEOMETRY": (CARDINAL, 32),
     "_NET_SUPPORTED": ("ATOM", 32),
     "_NET_SUPPORTING_WM_CHECK": ("WINDOW", 32),
     "_NET_WM_NAME": ("UTF8_STRING", 8),
     '_NET_WM_VISIBLE_NAME': ("UTF8_STRING", 8),
-    "_NET_WM_PID": ("CARDINAL", 32),
+    "_NET_WM_PID": (CARDINAL, 32),
     "_NET_CLIENT_LIST": ("WINDOW", 32),
     "_NET_CLIENT_LIST_STACKING": ("WINDOW", 32),
-    "_NET_NUMBER_OF_DESKTOPS": ("CARDINAL", 32),
-    "_NET_CURRENT_DESKTOP": ("CARDINAL", 32),
+    "_NET_NUMBER_OF_DESKTOPS": (CARDINAL, 32),
+    "_NET_CURRENT_DESKTOP": (CARDINAL, 32),
     "_NET_DESKTOP_NAMES": ("UTF8_STRING", 8),
-    "_NET_WORKAREA": ("CARDINAL", 32),
+    "_NET_WORKAREA": (CARDINAL, 32),
     "_NET_ACTIVE_WINDOW": ("WINDOW", 32),
-    "_NET_WM_DESKTOP": ("CARDINAL", 32),
-    "_NET_WM_STRUT": ("CARDINAL", 32),
-    "_NET_WM_STRUT_PARTIAL": ("CARDINAL", 32),
-    "_NET_WM_WINDOW_OPACITY": ("CARDINAL", 32),
+    "_NET_WM_DESKTOP": (CARDINAL, 32),
+    "_NET_WM_STRUT": (CARDINAL, 32),
+    "_NET_WM_STRUT_PARTIAL": (CARDINAL, 32),
+    "_NET_WM_WINDOW_OPACITY": (CARDINAL, 32),
     "_NET_WM_WINDOW_TYPE": (ATOM, 32),
     # Net State
     "_NET_WM_STATE": ("ATOM", 32),
@@ -62,7 +64,7 @@ PROPERTYMAP = {
     # ICCCM
     "WM_STATE": ("WM_STATE", 32),
     # Qtile-specific properties
-    "QTILE_INTERNAL": ("CARDINAL", 32)
+    "QTILE_INTERNAL": (CARDINAL, 32)
 }
 
 
@@ -88,7 +90,7 @@ SUPPORTED_ATOMS = [
     # From http://standards.freedesktop.org/wm-spec/latest/ar01s05.html
     '_NET_WM_NAME',
     '_NET_WM_VISIBLE_NAME',
-    '_NET_WM_ICON_NAME',
+    # '_NET_WM_ICON_NAME',
     '_NET_WM_DESKTOP',
     '_NET_WM_WINDOW_TYPE',
     '_NET_WM_STATE',

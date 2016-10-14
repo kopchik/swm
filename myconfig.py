@@ -11,7 +11,7 @@ from wm import WM
 from desktop import Desktop
 from window import Window
 from myosd import OSD
-from textgui import gui
+# from textgui import gui
 import asyncio
 import os.path
 import sys
@@ -160,11 +160,21 @@ def print_new_window_props(event, window: Window):
     run_("xprop -id %s" % window.wid)
 
 
+@wm.hook('window_unmap')
+def on_window_unmap(event, window):
+    window = find_next()
+    if not window:
+        return
+    wm.focus_on(window)
+
 # TODO: dirty hack, WM should not have unknown windows
+
+
 @wm.hook("unknown_window")
 def unknown_window(event, wid):
     run_("xprop -id %s" % wid)
     wm.on_new_window(wid)
+
 
 @wm.hook("window_enter")
 def on_window_enter(event, window):
@@ -319,6 +329,10 @@ def find_next(inc=1):
         window = windows[idx % tot]
         if not window.can_focus:
             continue
+        if window.skip:
+            continue
+        if not window.mapped:
+            continue
         return window
     return None
 
@@ -341,7 +355,10 @@ def prev_window(event):
 
 # SPAWN
 # terminals, etc
-wm.hotkey(([mod], 'x'), 'urxvtcd -rv -fade 50 -fn "xft:Terminus:size=16" -fb "xft:Terminus:bold:size=16" -sl 10000 -si -tn xterm')
+wm.hotkey(
+    ([mod],
+     'x'),
+    'urxvtcd -rv -fade 50 -fn "xft:Terminus:size=16" -fb "xft:Terminus:bold:size=16" -sl 10000 -si -tn xterm')
 wm.hotkey(([mod], 'y'), 'xterm')
 wm.hotkey(([mod], 'd'), "dmenu_run")
 wm.hotkey(([mod], 'l'), "mylock")
@@ -401,8 +418,12 @@ def status(event):
         root=root, focus=focus))
     for wid in sorted(wm.windows):
         window = wm.windows[wid]
-        log.status.debug("{wid:<10} {window.name:<20} {window.mapped:<10} {window.can_focus} {window.type}".format(
-            wid=wid, window=window))
+        # log.status.debug("{wid:<10} {window.name:<20} {window.mapped:<10}
+        # {window.can_focus}  {window.skip} {window.type}
+        # {window.flags}".format(wid="WID", namipyth    ))
+        log.status.debug(
+            "{wid:<10} {window.name:<20} {window.mapped:<10} {window.can_focus}  {window.skip} {window.type} {window.flags}".format(
+                wid=wid, window=window))
 
 # restore windows, otherwise they will stay invisible
 

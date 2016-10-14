@@ -1,4 +1,6 @@
-from defs import ATOM, PROPERTYMAP, WINDOW_TYPES, HintsFlags
+from defs import PROPERTYMAP, WINDOW_TYPES, HintsFlags
+from props import Props
+
 from xcffib.xproto import CW, EventMask, Atom
 from xcffib import xproto
 
@@ -43,47 +45,16 @@ class MaskMap:
 AttributeMasks = MaskMap(CW)
 
 
-class Props:
-    def __init__(self, conn, window, atomcache):
-        self.conn = conn
-        self.window = window
-        self.atomcache = atomcache
-
-    def __getitem__(self, prop):
-            rawprop = self.atomcache[prop] if isinstance(prop, str) else prop
-            assert prop in PROPERTYMAP, "unknown property {}, add it to PROPERTYMAP".format(prop)
-            typ, _ = PROPERTYMAP[prop]
-            rawtype = self.atomcache[typ] if isinstance(typ, str) else typ
-            wid = self.window.wid
-            r = self.conn.core.GetProperty(
-                False,         # delete
-                wid,           # window id
-                rawprop,
-                rawtype,
-                0,             # long_offset,
-                (2 ** 32) - 1  # long_length
-            ).reply()
-
-            if typ == 'CARDINAL':
-                return r.value.to_atoms()[0]
-            elif typ in ["STRING", "UTF8_STRING"]:
-                return r.value.to_utf8()
-            elif typ == ATOM:
-                return [self.atomcache.get_name(atom) for atom in r.value.to_atoms()]
-            else:
-                import pdb; pdb.set_trace()
-                raise Exception("Uknown type {}".format(typ))
-
-
 class Window:
     sticky = False
     can_focus = True
     above_all = False
     mapped = False
+    skip = False  # do not handle show() and hide() for this event
     type = "normal"
     name = "<no name>"
 
-    def __init__(self, wm, wid, mapped=True):
+    def __init__(self, wm, wid, atoms, mapped=True):
         from wm import WM  # TODO: dirtyhack to avoid circular imports
         assert isinstance(wm, WM), "wm must be an instance of WM"
         assert isinstance(wid, int), "wid must be int"
@@ -91,7 +62,7 @@ class Window:
         self.wm = wm
         self._conn = self.wm._conn
         self.prev_geometry = None
-        self.props = Props(conn = self._conn, window=self, atomcache=self.wm.atoms)
+        self.props = Props(conn=self._conn, window=self, atoms=atoms)
         self.update_name()  # TODO: this is not updated
         self.update_window_type()
         # do it after self.name is set (so repr works)
@@ -104,14 +75,16 @@ class Window:
             wid, CW.EventMask, [EventMask.EnterWindow])
 
     def show(self):
+        assert not self.skip
         self.log.show.debug("showing")
         self._conn.core.MapWindow(self.wid)
-        self.wm.xsync()
+        self.wm.flush()
         self.mapped = True
 
     def hide(self):
+        assert not self.skip
         self._conn.core.UnmapWindow(self.wid)
-        self.wm.xsync()
+        self.wm.flush()
         self.mapped = False
 
     def rise(self):
@@ -127,10 +100,10 @@ class Window:
         return self.stackmode(xproto.StackMode.Opposite)
 
     def stackmode(self, mode):
-        r = self._conn.core.ConfigureWindow(self.wid,
+        self._conn.core.ConfigureWindowChecked(self.wid,
                                                xproto.ConfigWindow.StackMode,
-                                               [mode])
-        self.wm.xsync()
+                                               [mode]).check()
+        self.wm.flush()
 
     def focus(self):
         """ Let window receive mouse and keyboard events.
@@ -142,7 +115,7 @@ class Window:
         # TODO: self.wm.root.set_property("_NET_ACTIVE_WINDOW", self.wid)
         self._conn.core.SetInputFocus(xproto.InputFocus.PointerRoot,
                                       self.wid, xproto.Time.CurrentTime)
-        self.wm.xsync()  # it is here mandatory :(
+        self.wm.flush()  # it is here mandatory :(
         return self
 
     def kill(self):
@@ -182,8 +155,14 @@ class Window:
         else:
             self.prev_geometry = self.geometry
             screen = self.wm.xrandr.screen
-            self.set_geometry(x=0, y=0, width=screen.width -
-                              1, height=screen.height - 1 - 18)  # TODO: 18 dirtyhack to place bottom panel
+            self.set_geometry(
+                x=0,
+                y=0,
+                width=screen.width -
+                1,
+                height=screen.height -
+                1 -
+                18)  # TODO: 18 dirtyhack to place bottom panel
             self.rise()
 
     @property
@@ -259,7 +238,7 @@ class Window:
                 typ, _ = PROPERTYMAP[prop]
 
         prop = self.wm.atoms[prop] if isinstance(prop, str) else prop
-        typ  = self.wm.atoms[typ]  if isinstance(typ, str) else typ
+        typ = self.wm.atoms[typ] if isinstance(typ, str) else typ
 
         r = self._conn.core.GetProperty(
             False,         # delete
@@ -282,7 +261,6 @@ class Window:
                 return r.value.to_string()
         else:
             return r
-
 
     # TODO: move this code to WM
     def set_prop(self, name, value, type=None, format=None):
@@ -319,15 +297,16 @@ class Window:
             value
         ).check()
 
-
     def list_props(self):
         reply = self.wm._conn.core.ListProperties(self.wid).reply()
         atoms = reply.atoms.list
         return [self.wm.atoms.get_name(atom) for atom in atoms]
 
-
     def update_window_type(self):
         raw_types = self.props['_NET_WM_WINDOW_TYPE']
+        if not raw_types:
+            self.skip = True
+
         for raw_type in raw_types:
             if raw_type in WINDOW_TYPES:
                 self.type = WINDOW_TYPES[raw_type]
@@ -337,13 +316,15 @@ class Window:
 
         return self.type
 
-
     def update_wm_hints(self):
         # TODO: dirty code borowwed from qtile
-        l = self.get_prop(Atom.WM_HINTS, typ=xproto.GetPropertyType.Any, unpack=int)
+        l = self.get_prop(
+            Atom.WM_HINTS,
+            typ=xproto.GetPropertyType.Any,
+            unpack=int)
         # self.log.error("WM_HINTS: {}".format(l))
         if not l:
-          return
+            return
 
         flags = set(k for k, v in HintsFlags.items() if l[0] & v)
         hints = dict(
@@ -363,7 +344,7 @@ class Window:
             self.log.notice("input hint off")
             self.can_focus = False
         self.hints = hints
-
+        self.flags = flags
 
     def __lt__(self, other):  # used for sorting and comparison
         return True

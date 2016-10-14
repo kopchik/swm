@@ -1,7 +1,9 @@
 from useful.log import Log
 
+
 class Mouse:
-    def  __init__(self, conn, root):
+
+    def __init__(self, conn, root):
         self.conn = conn
         self.root = root
         self.log = Log("mouse")

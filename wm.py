@@ -2,6 +2,7 @@ from defs import XCB_CONN_ERRORS, SUPPORTED_ATOMS
 from window import Window
 from desktop import Desktop
 from keyboard import Keyboard
+from atom import AtomVault
 from mouse import Mouse
 from utils import run_, get_modmask
 from hook import Hook
@@ -37,45 +38,6 @@ class Xrandr:
         # reply = xcffib.randr.`(runtime.viewport.root).reply()
         # print("XXXXXXXX", reply)
 
-# TODO: stolen from qtile. Probably, we want to re-factor it.
-
-
-class AtomCache:
-
-    def __init__(self, conn):
-        self.conn = conn
-        self.atoms = {}
-        self.reverse = {}
-
-        # We can change the pre-loads not to wait for a return
-        # for name in WINDOW_TYPES.keys():
-        #     self.insert(name=name)
-
-        # for i in dir(xproto.Atom):
-        #     if not i.startswith("_"):
-        #         self.insert(name=i, atom=getattr(xproto.Atom, i))
-
-    def insert(self, name=None, atom=None):
-        assert name or atom
-        if atom is None:
-            c = self.conn.core.InternAtom(False, len(name), name)
-            atom = c.reply().atom
-        if name is None:
-            c = self.conn.core.GetAtomName(atom)
-            name = c.reply().name.to_string()
-        self.atoms[name] = atom
-        self.reverse[atom] = name
-
-    def get_name(self, atom):
-        if atom not in self.reverse:
-            self.insert(atom=atom)
-        return self.reverse[atom]
-
-    def __getitem__(self, key):
-        if key not in self.atoms:
-            self.insert(name=key)
-        return self.atoms[key]
-
 
 class WM:
     """
@@ -85,7 +47,7 @@ class WM:
         be implemented by user in configuration file.
     """
     root = None   # type: Window
-    atoms = None  # type: AtomCache
+    atoms = None  # type: AtomVault
 
     def __init__(self, display=None, desktops=None, loop=None):
         self.log = Log("WM")
@@ -102,7 +64,7 @@ class WM:
         except xcffib.ConnectionException:
             sys.exit("cannot connect to %s" % display)
 
-        self.atoms = AtomCache(self._conn)
+        self.atoms = AtomVault(self._conn)
         self.desktops = desktops or [Desktop()]
         self.cur_desktop = self.desktops[0]
         self.cur_desktop.show()
@@ -112,14 +74,14 @@ class WM:
         xcb_screens = [i for i in xcb_setup.roots]
         self.xcb_default_screen = xcb_screens[self._conn.pref_screen]
         root_wid = self.xcb_default_screen.root
-        self.root = Window(self, root_wid, mapped=True)
+        self.root = Window(self, wid=root_wid, atoms=self.atoms, mapped=True)
         self.windows[root_wid] = self.root
 #        for desktop in self.desktops:
 #            desktop.windows.append(self.root)
 
         self.root.set_attr(
             eventmask=(
-                EventMask.StructureNotify
+                  EventMask.StructureNotify
                 | EventMask.SubstructureNotify
                 | EventMask.FocusChange
                 # | EventMask.SubstructureRedirect
@@ -131,16 +93,14 @@ class WM:
         )
 
         # INFORM X WHICH FEATURES WE SUPPORT
-        self.root.set_prop('_NET_SUPPORTED', [
-                           self.atoms[x] for x in SUPPORTED_ATOMS])
+        self.root.props[self.atoms._NET_SUPPORTED] = [self.atoms[a] for a in SUPPORTED_ATOMS]
 
         # PRETEND TO BE A WINDOW MANAGER
         supporting_wm_check_window = self.create_window(-1, -1, 1, 1)
-        supporting_wm_check_window.set_prop('_NET_WM_NAME', "SWM")
-        self.root.set_prop('_NET_SUPPORTING_WM_CHECK',
-                           supporting_wm_check_window.wid)
-        self.root.set_prop('_NET_NUMBER_OF_DESKTOPS', len(self.desktops))
-        self.root.set_prop('_NET_CURRENT_DESKTOP', 0)
+        supporting_wm_check_window.props['_NET_WM_NAME'] = "SWM"
+        self.root.props['_NET_SUPPORTING_WM_CHECK'] = supporting_wm_check_window.wid
+        self.root.props['_NET_NUMBER_OF_DESKTOPS'] = len(self.desktops)
+        self.root.props['_NET_CURRENT_DESKTOP'] = 0
 
         # TODO: set cursor
 
@@ -207,7 +167,7 @@ class WM:
         # TODO: messy ugly code
         wid = xcb_event.window
         atom = self.atoms.get_name(xcb_event.atom)
-        #window = self.windows.get(wid, Window(wm=self, wid=wid, mapped=True))
+        # window = self.windows.get(wid, Window(wm=self, wid=wid, mapped=True))
         self.log.error("PropertyNotify: %s" % atom)
         run_("xprop -id %s %s" % (wid, atom))
 
@@ -218,7 +178,8 @@ class WM:
         resp_type = self.atoms.get_name(xcb_event.response_type)
         type = self.atoms.get_name(xcb_event.type)
         wid = xcb_event.window
-        self.log.error("client message: resp_type={resp_type} window={wid} type={type} data={data}".format(**locals()))
+        self.log.error("client message: resp_type={resp_type} window={wid} type={type} data={data}"  \
+                       .format(**locals()))
         # 'bufsize', 'data', 'format', 'pack', 'response_type', 'sequence', 'synthetic', 'type', 'window']
 
         if type == '_NET_ACTIVE_WINDOW':
@@ -254,7 +215,7 @@ class WM:
 
     def on_new_window(self, wid):
         """ Registers new window. """
-        window = Window(wm=self, wid=wid, mapped=True)
+        window = Window(wm=self, wid=wid, atoms=self.atoms, mapped=True)
         # call configuration hood first
         # to setup attributes like 'sticky'
         self.hook.fire("new_window", window)
@@ -314,11 +275,11 @@ class WM:
     def on_window_enter(self, evname, xcb_event):
         wid = xcb_event.event
         if wid not in self.windows:
-            #self.log.on_window_enter.error("no window with wid=%s" % wid)
+            # self.log.on_window_enter.error("no window with wid=%s" % wid)
             self.hook.fire("unknown_window", wid)
             return
         window = self.windows[wid]
-        #self.log.on_window_enter("window_enter: %s %s" % (wid, window))
+        # self.log.on_window_enter("window_enter: %s %s" % (wid, window))
         self.hook.fire("window_enter", window)
 
     def grab_key(self, modifiers, key, owner_events=False, window=None):
@@ -417,7 +378,7 @@ class WM:
         self.cur_desktop = desktop
         self.cur_desktop.show()
         # TODO: move this code to Desktop.show()
-        self.root.set_prop('_NET_CURRENT_DESKTOP', desktop.id)
+        self.root.props[self.atom._NET_CURRENT_DESKTOP] = desktop.id
 
     def relocate_to(self, window: Window, to_desktop: Desktop):
         """ Relocates window to a specific desktop. """
@@ -486,19 +447,19 @@ class WM:
                 EventMask.StructureNotify | EventMask.Exposure
             ]
         )
-        return Window(self, wid)
+        return Window(self, wid=wid, atoms=self.atoms)
 
     def scan(self, focus=True):
         """ Gets all windows in the system. """
         self.log.debug("performing scan of all mapped windows")
         q = self._conn.core.QueryTree(self.root.wid).reply()
         for wid in q.children:
-            attrs = self._conn.core.GetWindowAttributes(wid).reply()
+            # attrs=self._conn.core.GetWindowAttributes(wid).reply()
             # print(attrs, type(attrs))
-            if attrs.map_state == xproto.MapState.Unmapped:
-                self.log.scan.debug(
-                    "window %s is not mapped, skipping" % wid)  # TODO
-                continue
+            # if attrs.map_state == xproto.MapState.Unmapped:
+            #    self.log.scan.debug(
+            #        "window %s is not mapped, skipping" % wid)  # TODO
+            #    continue
             if wid not in self.windows:
                 self.on_new_window(wid)
         self.log.scan.info("the following windows are active: %s" %
@@ -506,11 +467,10 @@ class WM:
 
         if focus:
             windows = sorted(self.windows.values())
-            windows = list(filter(lambda w: w!=self.root, windows))
+            windows = list(filter(lambda w: w != self.root and not w.skip, windows))
             if windows:
                 # on empty desktop there is nothing to focus on
                 self.cur_desktop.focus_on(windows[-1], warp=True)
-
 
     def finalize(self):
         """ This code is run when event loop is terminated. """
@@ -567,7 +527,6 @@ class WM:
         # Exceptions happen because of the async nature of X.
 
         while True:
-            # TODO: too long try ... catch
             try:
                 xcb_event = self._conn.poll_for_event()
                 if not xcb_event:
@@ -580,6 +539,7 @@ class WM:
                     continue
                 self.log._xpoll.critical("got %s %s" % (evname, xcb_event))
                 self.hook.fire(evname, xcb_event)
+                self.flush()  # xcb doesn't flush implicitly
             except (WindowError, AccessError, DrawableError):
                 self.log.debug("(minor exception)")
             except Exception as e:
@@ -591,4 +551,3 @@ class WM:
                                       (error_string, error_code))
                     self.stop(xserver_dead=True)
                     break
-        self.flush()  # xcb often doesn't flush implicitly
